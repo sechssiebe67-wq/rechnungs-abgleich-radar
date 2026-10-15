@@ -16,7 +16,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from . import __version__
 from .config import Settings
-from .db import Store
+from .db import DEFAULT_FINDING_ORDER, FINDING_ORDER_BY, Store
 from .digest import render_html, weekly_digest
 from .notify import deliver_digest
 from .ingest import (
@@ -87,6 +87,22 @@ def _non_negative_query_int(
     if value < 0:
         raise ValueError("%s must be >= 0" % name)
     return value
+
+
+def _finding_sort(query: Dict[str, List[str]]) -> Optional[str]:
+    """Read the optional, whitelisted ``sort`` parameter for findings.
+
+    Returns ``None`` when absent/empty (the store then applies its documented
+    default ordering). Raises :class:`ValueError` (mapped to ``400`` by the
+    dispatcher) for any value outside :data:`FINDING_ORDER_BY`.
+    """
+    raw = query.get("sort", [None])[0]
+    if raw is None or raw == "":
+        return None
+    if raw not in FINDING_ORDER_BY:
+        allowed = ", ".join(sorted(FINDING_ORDER_BY))
+        raise ValueError("sort must be one of: %s" % allowed)
+    return raw
 
 
 class Router:
@@ -395,14 +411,31 @@ class RadarHandler(BaseHTTPRequestHandler):
         min_amount = query.get("min_amount", [None])[0]
         invoice_id = query.get("invoice_id", [None])[0]
         entities = _query_list(query, "entity") or None
+        limit = _non_negative_query_int(query, "limit")
+        offset = _non_negative_query_int(query, "offset")
+        sort = _finding_sort(query)
+        filters = {
+            "status": status,
+            "min_amount": float(min_amount) if min_amount else None,
+            "invoice_id": int(invoice_id) if invoice_id else None,
+            "entities": entities,
+        }
         findings = self.store.list_findings(
-            status=status,
-            min_amount=float(min_amount) if min_amount else None,
-            invoice_id=int(invoice_id) if invoice_id else None,
-            entities=entities,
+            limit=limit, offset=offset, order_by=sort, **filters
         )
+        total_count = self.store.count_findings(**filters)
         total = round(sum(float(f["amount"]) for f in findings), 2)
-        self._send_json({"findings": findings, "total_amount": total, "count": len(findings)})
+        self._send_json(
+            {
+                "findings": findings,
+                "total_amount": total,
+                "count": len(findings),
+                "total_count": total_count,
+                "limit": limit,
+                "offset": offset,
+                "sort": sort or DEFAULT_FINDING_ORDER,
+            }
+        )
 
     def h_feedback(self, params, query) -> None:
         data = self._json_body()
