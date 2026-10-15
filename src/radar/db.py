@@ -812,29 +812,141 @@ class Store:
             )
         )
 
-    def stats(self) -> dict:
-        with self.connect() as conn:
-            invoices = conn.execute("SELECT COUNT(*) AS c FROM invoices").fetchone()["c"]
-            findings = conn.execute("SELECT COUNT(*) AS c FROM findings").fetchone()["c"]
-            open_amount = conn.execute(
-                "SELECT COALESCE(SUM(amount), 0) AS s FROM findings WHERE status = 'open'"
-            ).fetchone()["s"]
-            confirmed = conn.execute(
-                "SELECT COUNT(*) AS c FROM findings WHERE feedback = 'confirmed'"
-            ).fetchone()["c"]
-            false_alarm = conn.execute(
-                "SELECT COUNT(*) AS c FROM findings WHERE feedback = 'false_alarm'"
-            ).fetchone()["c"]
+    @staticmethod
+    def _stats_counters(row: sqlite3.Row) -> dict:
+        """Shape the flat KPI counters from one aggregate row."""
+        confirmed = int(row["confirmed"])
+        false_alarm = int(row["false_alarm"])
         reviewed = confirmed + false_alarm
         precision = (confirmed / reviewed) if reviewed else None
         return {
-            "invoices": invoices,
-            "findings": findings,
-            "open_amount": round(float(open_amount), 2),
+            "invoices": int(row["invoices"]),
+            "findings": int(row["findings"]),
+            "open_amount": round(float(row["open_amount"]), 2),
             "confirmed": confirmed,
             "false_alarm": false_alarm,
             "precision": round(precision, 4) if precision is not None else None,
         }
+
+    @staticmethod
+    def _stats_groups(rows: List[sqlite3.Row], key_name: str) -> List[dict]:
+        """Shape per-group KPI rows and apply the documented ordering.
+
+        Sorted by ``open_amount`` descending, then by the group key ascending so
+        the order is deterministic for ties.
+        """
+        entries: List[dict] = []
+        for row in rows:
+            confirmed = int(row["confirmed"])
+            false_alarm = int(row["false_alarm"])
+            reviewed = confirmed + false_alarm
+            precision = (confirmed / reviewed) if reviewed else None
+            key = row["grp"]
+            entries.append(
+                {
+                    key_name: "" if key is None else key,
+                    "findings": int(row["findings"]),
+                    "confirmed": confirmed,
+                    "false_alarm": false_alarm,
+                    "open": int(row["open"]),
+                    "open_amount": round(float(row["open_amount"]), 2),
+                    "precision": round(precision, 4)
+                    if precision is not None
+                    else None,
+                }
+            )
+        entries.sort(key=lambda entry: (-entry["open_amount"], entry[key_name]))
+        return entries
+
+    def stats(
+        self,
+        settings: Optional[Settings] = None,
+        entities: Optional[List[str]] = None,
+        cost_centers: Optional[List[str]] = None,
+    ) -> dict:
+        """Flat KPIs, optionally sliced by society and/or cost center.
+
+        Always returns the six flat counters (``invoices``, ``findings``,
+        ``open_amount``, ``confirmed``, ``false_alarm``, ``precision``) plus two
+        grouped blocks:
+
+        - ``entities``: one entry per society occurring in the (filtered) invoices,
+        - ``cost_centers``: one entry per cost center (empty rendered as ``""``).
+
+        Each entry carries ``findings``, ``confirmed``, ``false_alarm``,
+        ``open``, ``open_amount`` and ``precision`` and is sorted by
+        ``open_amount`` descending, then by the group key ascending.
+
+        Without filters the flat counters equal the historical global values and
+        the blocks describe the same full set. With ``entities``/``cost_centers``
+        the flat counters and both blocks are computed over exactly the matching
+        invoices. The two filters are AND-combined; unknown values are not an
+        error and simply yield empty blocks and zeroed counters. Only the
+        existing aggregates are reused — no new tables or columns are required.
+        The ``settings`` argument is accepted for symmetry with the other
+        reports and is currently unused.
+
+        Note: :meth:`radar.app.RadarHandler.h_stats` omits the two blocks when no
+        filter is supplied so the HTTP response stays byte-for-byte identical to
+        the pre-breakdown contract.
+        """
+        entity_filter = list(entities) if entities else []
+        cost_center_filter = list(cost_centers) if cost_centers else []
+        clauses: List[str] = []
+        params: List[object] = []
+        if entity_filter:
+            placeholders = ", ".join("?" for _ in entity_filter)
+            clauses.append("i.entity IN (%s)" % placeholders)
+            params.extend(entity_filter)
+        if cost_center_filter:
+            placeholders = ", ".join("?" for _ in cost_center_filter)
+            clauses.append("i.cost_center IN (%s)" % placeholders)
+            params.extend(cost_center_filter)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+
+        with self.connect() as conn:
+            totals = conn.execute(
+                """SELECT COUNT(DISTINCT i.id) AS invoices,
+                          COUNT(f.id) AS findings,
+                          COALESCE(SUM(CASE WHEN f.status = 'open'
+                                            THEN f.amount ELSE 0 END), 0) AS open_amount,
+                          COALESCE(SUM(CASE WHEN f.feedback = 'confirmed'
+                                            THEN 1 ELSE 0 END), 0) AS confirmed,
+                          COALESCE(SUM(CASE WHEN f.feedback = 'false_alarm'
+                                            THEN 1 ELSE 0 END), 0) AS false_alarm
+                   FROM invoices i
+                   LEFT JOIN findings f ON f.invoice_id = i.id
+                   %s""" % where,
+                params,
+            ).fetchone()
+            result = self._stats_counters(totals)
+            grouped: dict = {}
+            for key_name, expression in (
+                ("entity", "COALESCE(i.entity, 'default')"),
+                ("cost_center", "COALESCE(i.cost_center, '')"),
+            ):
+                grouped[key_name] = conn.execute(
+                    """SELECT %s AS grp,
+                              COUNT(f.id) AS findings,
+                              COALESCE(SUM(CASE WHEN f.feedback = 'confirmed'
+                                                THEN 1 ELSE 0 END), 0) AS confirmed,
+                              COALESCE(SUM(CASE WHEN f.feedback = 'false_alarm'
+                                                THEN 1 ELSE 0 END), 0) AS false_alarm,
+                              COALESCE(SUM(CASE WHEN f.status = 'open'
+                                                THEN 1 ELSE 0 END), 0) AS open,
+                              COALESCE(SUM(CASE WHEN f.status = 'open'
+                                                THEN f.amount ELSE 0 END), 0) AS open_amount
+                       FROM invoices i
+                       LEFT JOIN findings f ON f.invoice_id = i.id
+                       %s
+                       GROUP BY %s""" % (expression, where, expression),
+                    params,
+                ).fetchall()
+        result["entities"] = self._stats_groups(grouped["entity"], "entity")
+        result["cost_centers"] = self._stats_groups(
+            grouped["cost_center"], "cost_center"
+        )
+        return result
 
     def stats_by_supplier(
         self,

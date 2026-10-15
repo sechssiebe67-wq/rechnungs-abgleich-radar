@@ -48,8 +48,30 @@
   </section>
 
   <section>
-    <h2>Kennzahlen</h2>
+    <h2>Kennzahlen <span class="muted">(optional je Gesellschaft und Kostenstelle)</span></h2>
+    <div class="controls">
+      <label class="muted">Gesellschaft (Mehrfachauswahl)
+        <select id="kpi-entity-filter" multiple size="3" onchange="loadMetrics()"></select>
+      </label>
+      <label class="muted">Kostenstelle (Mehrfachauswahl)
+        <select id="kpi-cost-center-filter" multiple size="3" onchange="loadMetrics()"></select>
+      </label>
+      <button class="secondary" onclick="clearKpiFilters()">Filter zurücksetzen</button>
+      <span class="error" id="kpi-error"></span>
+    </div>
     <div class="metrics" id="metrics"></div>
+    <h3 style="margin:1.25rem 0 .25rem; font-size:.9rem;">Gesellschaften <span class="muted">(Aufschlüsselung)</span></h3>
+    <p class="muted" id="kpi-entities-hint"></p>
+    <table id="kpi-entities-table" style="margin-top:.5rem">
+      <thead><tr><th>Gesellschaft</th><th class="amount">Findings</th><th class="amount">Bestätigt</th><th class="amount">Fehlalarm</th><th class="amount">Offen</th><th class="amount">Offenes Volumen</th><th class="amount">Precision</th></tr></thead>
+      <tbody id="kpi-entities"></tbody>
+    </table>
+    <h3 style="margin:1.25rem 0 .25rem; font-size:.9rem;">Kostenstellen <span class="muted">(Aufschlüsselung)</span></h3>
+    <p class="muted" id="kpi-cost-centers-hint"></p>
+    <table id="kpi-cost-centers-table" style="margin-top:.5rem">
+      <thead><tr><th>Kostenstelle</th><th class="amount">Findings</th><th class="amount">Bestätigt</th><th class="amount">Fehlalarm</th><th class="amount">Offen</th><th class="amount">Offenes Volumen</th><th class="amount">Precision</th></tr></thead>
+      <tbody id="kpi-cost-centers"></tbody>
+    </table>
   </section>
 
   <section>
@@ -326,14 +348,68 @@ async function loadHealth() {
   try { const d = await api('/healthz'); document.getElementById('health').textContent = 'status: ' + d.status; }
   catch (e) { document.getElementById('health').textContent = 'status: error'; }
 }
+function selectedKpiEntities() {
+  const sel = document.getElementById('kpi-entity-filter');
+  if (!sel) return [];
+  return Array.from(sel.selectedOptions).map(o => o.value);
+}
+function selectedKpiCostCenters() {
+  const sel = document.getElementById('kpi-cost-center-filter');
+  if (!sel) return [];
+  return Array.from(sel.selectedOptions).map(o => o.value);
+}
+function kpiQuery() {
+  const parts = [];
+  selectedKpiEntities().forEach(e => parts.push('entity=' + encodeURIComponent(e)));
+  selectedKpiCostCenters().forEach(c => parts.push('cost_center=' + encodeURIComponent(c)));
+  return parts.length ? '?' + parts.join('&') : '';
+}
+function clearKpiFilters() {
+  ['kpi-entity-filter', 'kpi-cost-center-filter'].forEach(function (id) {
+    const sel = document.getElementById(id);
+    if (sel) Array.from(sel.options).forEach(o => { o.selected = false; });
+  });
+  return loadMetrics();
+}
+function renderKpiBreakdown(tbodyId, hintId, tableId, entries, keyName) {
+  const tbody = document.getElementById(tbodyId);
+  const table = document.getElementById(tableId);
+  const hint = document.getElementById(hintId);
+  if (!tbody || !table || !hint) return;
+  if (!entries.length) {
+    hint.textContent = 'Keine Aufschlüsselung für die gewählten Filter.';
+    table.style.display = 'none';
+    tbody.innerHTML = '';
+    return;
+  }
+  hint.textContent = '';
+  table.style.display = '';
+  tbody.innerHTML = entries.map(e => `<tr>
+    <td>${esc(e[keyName] || '—')}</td>
+    <td class="amount">${esc(e.findings)}</td>
+    <td class="amount">${esc(e.confirmed)}</td>
+    <td class="amount">${esc(e.false_alarm)}</td>
+    <td class="amount">${esc(e.open)}</td>
+    <td class="amount">${money(e.open_amount)}</td>
+    <td class="amount">${pct(e.precision)}</td>
+  </tr>`).join('');
+}
 async function loadMetrics() {
-  const d = await api('/api/stats');
-  const precision = d.precision == null ? 'n/a' : Math.round(d.precision * 100) + '%';
-  document.getElementById('metrics').innerHTML = [
-    ['Rechnungen', d.invoices], ['Findings', d.findings],
-    ['Offenes Volumen', money(d.open_amount)], ['Precision', precision],
-    ['Bestätigt', d.confirmed], ['Fehlalarm', d.false_alarm],
-  ].map(([label, value]) => `<div class="metric"><div class="value">${esc(value)}</div><div class="label">${esc(label)}</div></div>`).join('');
+  const errorEl = document.getElementById('kpi-error');
+  try {
+    const d = await api('/api/stats' + kpiQuery());
+    if (errorEl) errorEl.textContent = '';
+    const precision = d.precision == null ? 'n/a' : Math.round(d.precision * 100) + '%';
+    document.getElementById('metrics').innerHTML = [
+      ['Rechnungen', d.invoices], ['Findings', d.findings],
+      ['Offenes Volumen', money(d.open_amount)], ['Precision', precision],
+      ['Bestätigt', d.confirmed], ['Fehlalarm', d.false_alarm],
+    ].map(([label, value]) => `<div class="metric"><div class="value">${esc(value)}</div><div class="label">${esc(label)}</div></div>`).join('');
+    renderKpiBreakdown('kpi-entities', 'kpi-entities-hint', 'kpi-entities-table', d.entities || [], 'entity');
+    renderKpiBreakdown('kpi-cost-centers', 'kpi-cost-centers-hint', 'kpi-cost-centers-table', d.cost_centers || [], 'cost_center');
+  } catch (e) {
+    if (errorEl) errorEl.textContent = 'Fehler: ' + e.message;
+  }
 }
 function selectedEntities() {
   const sel = document.getElementById('entity-filter');
@@ -345,14 +421,17 @@ function entityQuery() {
   if (!entities.length) return '';
   return '?' + entities.map(e => 'entity=' + encodeURIComponent(e)).join('&');
 }
-async function loadEntities() {
-  const d = await api('/api/entities');
-  const sel = document.getElementById('entity-filter');
+function fillEntitySelect(id, entities, previous) {
+  const sel = document.getElementById(id);
   if (!sel) return;
-  const previous = new Set(selectedEntities());
-  sel.innerHTML = (d.entities || [])
+  sel.innerHTML = (entities || [])
     .map(e => `<option value="${esc(e)}">${esc(e)}</option>`).join('');
   Array.from(sel.options).forEach(o => { if (previous.has(o.value)) o.selected = true; });
+}
+async function loadEntities() {
+  const d = await api('/api/entities');
+  fillEntitySelect('entity-filter', d.entities, new Set(selectedEntities()));
+  fillEntitySelect('kpi-entity-filter', d.entities, new Set(selectedKpiEntities()));
 }
 function selectedCostCenters() {
   const sel = document.getElementById('cost-center-filter');
@@ -375,6 +454,7 @@ async function loadCostCenters() {
   const d = await api('/api/cost-centers');
   fillCostCenterSelect('cost-center-filter', d.cost_centers, new Set(selectedCostCenters()));
   fillCostCenterSelect('digest-cost-center-filter', d.cost_centers, new Set(selectedDigestCostCenters()));
+  fillCostCenterSelect('kpi-cost-center-filter', d.cost_centers, new Set(selectedKpiCostCenters()));
 }
 function digestQuery() {
   const parts = [];
