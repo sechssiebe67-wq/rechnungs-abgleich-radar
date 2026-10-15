@@ -153,6 +153,30 @@ FINDING_ORDER_BY = {
 }
 DEFAULT_FINDING_ORDER = "amount_desc"
 
+# Whitelisted sort orders for the invoice list. ``created_at_desc`` is the
+# default and reproduces the original ``ORDER BY i.created_at DESC, i.id DESC``
+# exactly; the secondary ``id`` key keeps the order deterministic for ties and
+# stable pagination.
+INVOICE_ORDER_BY = {
+    "created_at_desc": "i.created_at DESC, i.id DESC",
+    "created_at_asc": "i.created_at ASC, i.id ASC",
+    "invoice_number_asc": "i.invoice_number ASC, i.id ASC",
+    "invoice_number_desc": "i.invoice_number DESC, i.id DESC",
+}
+DEFAULT_INVOICE_ORDER = "created_at_desc"
+
+# Whitelisted sort orders for the supplier-rule list. ``supplier_asc`` is the
+# default and reproduces the original ``ORDER BY supplier``. ``supplier`` is the
+# primary key (hence unique), so it doubles as the deterministic secondary key;
+# the ``updated_at`` orders append it to break ties.
+SUPPLIER_RULE_ORDER_BY = {
+    "supplier_asc": "supplier ASC",
+    "supplier_desc": "supplier DESC",
+    "updated_at_desc": "updated_at DESC, supplier ASC",
+    "updated_at_asc": "updated_at ASC, supplier ASC",
+}
+DEFAULT_SUPPLIER_RULE_ORDER = "supplier_asc"
+
 
 def _impact_period(row: sqlite3.Row, prefix: str) -> dict:
     """Shape one before/after aggregate row into a report period."""
@@ -282,12 +306,52 @@ class Store:
             ).fetchone()
         return dict(row) if row else None
 
-    def list_supplier_rules(self) -> List[dict]:
+    def list_supplier_rules(
+        self,
+        limit: Optional[int] = None,
+        offset: Optional[int] = None,
+        order_by: Optional[str] = None,
+    ) -> List[dict]:
+        """List supplier rules, optionally sorted and paged.
+
+        ``order_by`` must be one of :data:`SUPPLIER_RULE_ORDER_BY`; ``None``
+        keeps the documented default ordering (``supplier_asc``) and is fully
+        backwards compatible. ``limit``/``offset`` are applied only when
+        provided, so an unpaged call returns exactly the rows it always did.
+        """
+        if order_by is None:
+            order_by = DEFAULT_SUPPLIER_RULE_ORDER
+        if order_by not in SUPPLIER_RULE_ORDER_BY:
+            raise ValueError("unknown order_by: %s" % order_by)
+        if limit is not None and int(limit) < 0:
+            raise ValueError("limit must be >= 0")
+        if offset is not None and int(offset) < 0:
+            raise ValueError("offset must be >= 0")
+
+        query = (
+            "SELECT * FROM supplier_rules ORDER BY "
+            + SUPPLIER_RULE_ORDER_BY[order_by]
+        )
+        params: List[object] = []
+        if limit is not None:
+            query += " LIMIT ?"
+            params.append(int(limit))
+            if offset is not None:
+                query += " OFFSET ?"
+                params.append(int(offset))
+        elif offset is not None:
+            query += " LIMIT -1 OFFSET ?"
+            params.append(int(offset))
         with self.connect() as conn:
-            rows = conn.execute(
-                "SELECT * FROM supplier_rules ORDER BY supplier"
-            ).fetchall()
+            rows = conn.execute(query, params).fetchall()
         return [dict(row) for row in rows]
+
+    def count_supplier_rules(self) -> int:
+        """Count all supplier rules, independent of any pagination window."""
+        with self.connect() as conn:
+            return int(
+                conn.execute("SELECT COUNT(*) AS c FROM supplier_rules").fetchone()["c"]
+            )
 
     def delete_supplier_rule(self, supplier: str) -> bool:
         with self.connect() as conn:
@@ -465,17 +529,55 @@ class Store:
             ],
         )
 
-    def list_invoices(self) -> List[dict]:
+    def list_invoices(
+        self,
+        limit: Optional[int] = None,
+        offset: Optional[int] = None,
+        order_by: Optional[str] = None,
+    ) -> List[dict]:
+        """List invoices, optionally sorted and paged.
+
+        ``order_by`` must be one of :data:`INVOICE_ORDER_BY`; ``None`` keeps the
+        documented default ordering (``created_at_desc``) and is fully backwards
+        compatible. ``limit``/``offset`` are applied only when provided, so an
+        unpaged call returns exactly the rows it always did.
+        """
+        if order_by is None:
+            order_by = DEFAULT_INVOICE_ORDER
+        if order_by not in INVOICE_ORDER_BY:
+            raise ValueError("unknown order_by: %s" % order_by)
+        if limit is not None and int(limit) < 0:
+            raise ValueError("limit must be >= 0")
+        if offset is not None and int(offset) < 0:
+            raise ValueError("offset must be >= 0")
+
+        query = (
+            """SELECT i.*,
+                      (SELECT COUNT(*) FROM findings f WHERE f.invoice_id = i.id) AS finding_count,
+                      (SELECT COALESCE(SUM(amount), 0) FROM findings f
+                         WHERE f.invoice_id = i.id AND f.status = 'open') AS open_amount
+               FROM invoices i
+               ORDER BY """
+            + INVOICE_ORDER_BY[order_by]
+        )
+        params: List[object] = []
+        if limit is not None:
+            query += " LIMIT ?"
+            params.append(int(limit))
+            if offset is not None:
+                query += " OFFSET ?"
+                params.append(int(offset))
+        elif offset is not None:
+            query += " LIMIT -1 OFFSET ?"
+            params.append(int(offset))
         with self.connect() as conn:
-            rows = conn.execute(
-                """SELECT i.*,
-                          (SELECT COUNT(*) FROM findings f WHERE f.invoice_id = i.id) AS finding_count,
-                          (SELECT COALESCE(SUM(amount), 0) FROM findings f
-                             WHERE f.invoice_id = i.id AND f.status = 'open') AS open_amount
-                   FROM invoices i
-                   ORDER BY i.created_at DESC, i.id DESC"""
-            ).fetchall()
+            rows = conn.execute(query, params).fetchall()
         return [dict(row) for row in rows]
+
+    def count_invoices(self) -> int:
+        """Count all invoices, independent of any pagination window."""
+        with self.connect() as conn:
+            return int(conn.execute("SELECT COUNT(*) AS c FROM invoices").fetchone()["c"])
 
     def list_entities(self) -> List[str]:
         """Return the distinct, sorted entities occurring in invoices."""

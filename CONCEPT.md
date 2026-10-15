@@ -85,6 +85,27 @@ persistentem Speicher.
     Pagination); `total_amount` ist die Summe über die gelieferte Seite.
   - Ungültige Werte (unbekanntes `sort`, negatives `limit`, nicht-ganzzahliges
     `offset`) liefern `400` mit JSON-Fehlerkörper.
+- **Seitenweise Rechnungs- und Regel-Liste** (`GET /api/invoices`,
+  `GET /api/supplier-rules`): dasselbe Muster wie die Findings-Liste, ohne
+  bestehende Aufrufer zu brechen. Beide Endpoints bleiben ohne neue Parameter
+  vollständig rückwärtskompatibel (`/api/invoices` weiterhin nach
+  Erstellungszeit absteigend, `/api/supplier-rules` weiterhin alphabetisch nach
+  Lieferant):
+  - `?limit=` und `?offset=` (jeweils nicht-negative Ganzzahlen) schneiden ein
+    Fenster aus der sortierten Menge; ohne Angabe werden alle Einträge
+    geliefert.
+  - `?sort=` wählt je Endpoint aus einer Whitelist:
+    - Rechnungen: `created_at_desc` (Default), `created_at_asc`,
+      `invoice_number_asc`, `invoice_number_desc` (deterministischer
+      Sekundärschlüssel `id`).
+    - Lieferanten-Regeln: `supplier_asc` (Default), `supplier_desc`,
+      `updated_at_desc`, `updated_at_asc` (sekundärer Schlüssel `supplier`).
+  - Die Antwort enthält zusätzlich `limit`, `offset`, `sort` (effektiv),
+    `count` (gelieferte Einträge) und `total_count` (alle Einträge vor der
+    Pagination); die Felder `invoices` bzw. `supplier_rules` behalten Name und
+    Struktur.
+  - Ungültige Werte (unbekanntes `sort`, negatives oder nicht-ganzzahliges
+    `limit`/`offset`) liefern `400` mit JSON-Fehlerkörper.
 - **Nachvollziehbarkeit:** Audit-Ansicht pro Rechnung — was verglichen wurde und
   was abwich (Referenzwert, Ist-Wert, Betrag, Begründung).
 - **Manuelles Feedback** pro Treffer (bestätigt / Fehlalarm) inkl. Precision-
@@ -215,9 +236,14 @@ priorisiert die Freigabe-Entscheidung.
    `amount_asc`, `created_at_desc`, `created_at_asc`) und liefert `limit`,
    `offset`, `sort`, `count` und `total_count`. Damit bleibt der Endpoint auch
    bei tausenden Findings nutzbar, ohne bestehende Aufrufer zu brechen.
-   Nächster Ausbauschritt: Pagination/Sortierung auf die übrigen
-   Listen-Endpoints (z. B. Rechnungen und Lieferanten-Regeln) übertragen und
-   die Web-Oberfläche mit Seitenumschaltung und Sortierung ausstatten.
+   **Umgesetzt:** dasselbe Muster liegt jetzt auch auf den Listen-Endpoints
+   `GET /api/invoices` (`created_at_desc`/`created_at_asc`/
+   `invoice_number_asc`/`invoice_number_desc`) und `GET /api/supplier-rules`
+   (`supplier_asc`/`supplier_desc`/`updated_at_desc`/`updated_at_asc`) — jeweils
+   mit `?limit=`, `?offset=`, `?sort=`, den Antwortfeldern `limit`, `offset`,
+   `sort`, `count`, `total_count` und `400` bei ungültigen Werten.
+   Verbleibender Ausbauschritt: die Web-Oberfläche mit Seitenumschaltung und
+   Sortierung ausstatten.
 
 ## Validation plan (Bezug zur Produkthypothese)
 

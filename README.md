@@ -67,12 +67,13 @@ python3 -m unittest discover -s tests -v
 | `GET /api/stats/roi` | ROI-Nachweis: vermiedener Prüfaufwand und vermiedene Fehlzahlungen aus dem Feedback, je Lieferant, je Gesellschaft, je Artikel und gesamt (`?review_minutes=`, `?hourly_rate=`, `?article_limit=`, `?entity=`) |
 | `GET /api/entities` | Sortierte Liste der in Rechnungen vorkommenden Gesellschaften |
 | `POST /api/suppliers` | Lieferant anlegen |
-| `GET /api/supplier-rules` | Liste aller Lieferanten-Regeln |
+| `GET /api/supplier-rules` | Liste aller Lieferanten-Regeln; optional seitenweise (`?limit=`, `?offset=`) und sortiert (`?sort=`) |
 | `GET /api/supplier-rules/:supplier` | Einzelne Regel oder `404` |
 | `POST /api/supplier-rules` | Regel anlegen/aktualisieren (Objekt oder Liste) |
 | `DELETE /api/supplier-rules/:supplier` | Regel löschen, `404` bei unbekanntem Lieferanten |
 | `POST /api/reference-prices` | Vertrags-/akzeptierten Preis anlegen (JSON, Liste oder `prices`) |
 | `POST /api/purchase-orders` | Bestellung mit Positionen anlegen |
+| `GET /api/invoices` | Liste aller Rechnungen; optional seitenweise (`?limit=`, `?offset=`) und sortiert (`?sort=`) |
 | `POST /api/invoices` | Rechnung per JSON anlegen und sofort abgleichen |
 | `POST /api/invoices/import` | Rechnungen per CSV (ein Datensatz pro Position) importieren |
 | `GET /api/invoices/:id` | Nachvollziehbarkeit: was wurde verglichen, was wich ab |
@@ -126,6 +127,39 @@ Ungültige Werte — unbekanntes `sort`, negatives `limit` oder nicht-ganzzahlig
 ```sh
 # Zweite Seite à 5 Einträgen, nach Erstellungszeit aufsteigend
 curl -sS 'http://localhost:8080/api/findings?limit=5&offset=5&sort=created_at_asc'
+```
+
+### Pagination und Sortierung der Rechnungs- und Regel-Listen
+
+`GET /api/invoices` und `GET /api/supplier-rules` folgen demselben Muster wie
+die Findings-Liste und bleiben **ohne neue Parameter rückwärtskompatibel**:
+`/api/invoices` liefert weiterhin alle Rechnungen nach Erstellungszeit
+absteigend, `/api/supplier-rules` weiterhin alle Regeln alphabetisch nach
+Lieferant. Mit den optionalen Parametern lassen sich beide Listen bei großem
+Bestand begrenzen und umsortieren.
+
+| Endpoint | `sort`-Whitelist | Default |
+| --- | --- | --- |
+| `GET /api/invoices` | `created_at_desc`, `created_at_asc`, `invoice_number_asc`, `invoice_number_desc` | `created_at_desc` |
+| `GET /api/supplier-rules` | `supplier_asc`, `supplier_desc`, `updated_at_desc`, `updated_at_asc` | `supplier_asc` |
+
+`limit` und `offset` sind jeweils nicht-negative Ganzzahlen. Die Antwort enthält
+zusätzlich `limit` (effektiv), `offset` (effektiv), `sort` (effektiv), `count`
+(gelieferte Einträge) und `total_count` (alle Einträge vor der Pagination); die
+Felder `invoices` bzw. `supplier_rules` behalten Name und Struktur. Ungültige
+Werte — unbekanntes `sort`, negatives oder nicht-ganzzahliges `limit`/`offset` —
+liefern `400` mit einem JSON-Fehlerkörper.
+
+```sh
+# Zweite Seite à 10 Rechnungen, nach Rechnungsnummer aufsteigend
+curl -sS 'http://localhost:8080/api/invoices?limit=10&offset=10&sort=invoice_number_asc'
+
+# Erste 5 Lieferanten-Regeln, zuletzt geänderte zuerst
+curl -sS 'http://localhost:8080/api/supplier-rules?limit=5&sort=updated_at_desc'
+
+# Rückwärtskompatibel: ohne Parameter wie bisher (alle Einträge)
+curl -sS 'http://localhost:8080/api/invoices'
+curl -sS 'http://localhost:8080/api/supplier-rules'
 ```
 
 ### CSV-Format für Rechnungsimport
