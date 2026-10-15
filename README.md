@@ -256,7 +256,10 @@ Rechnungen und Lieferanten-Regeln gibt es je eine Sortier-Auswahl, „Zurück“
 `count`/`total_count`; ohne Bedienung entsprechen die Anfragen den dokumentierten
 Defaults der Endpoints. Die Findings-Sektion bietet zusätzlich eine Auswahl
 „Prüfstatus“ (`Alle`/`Offen`/`Durchgesehen`), die als `review_status` mitgesendet
-wird. Die Rechnungs-Sektion zeigt die Spalten „Findings offen“, „Offenes
+wird. Die Findings-Liste behält dabei den bestehenden Finding-Filter
+`status=open` und kombiniert ihn per UND mit dem gewählten `review_status`;
+geprüfte Findings einer noch offenen Rechnung erscheinen also weiterhin nicht in
+der Sektion „Offene Auffälligkeiten“. Die Rechnungs-Sektion zeigt die Spalten „Findings offen“, „Offenes
 Volumen“ und „Status“ und bietet die Sortierungen `open_amount_desc` und
 `open_finding_count_desc`. Bei einem `400` (z. B. manipulierter `sort`- oder
 `review_status`-Wert) zeigt die Oberfläche eine sichtbare Fehlermeldung, ohne die

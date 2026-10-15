@@ -515,11 +515,14 @@ function selectedReviewStatus() {
   const sel = document.getElementById('findings-review-status');
   return (sel && sel.value) || 'all';
 }
+function findingsFilters(reviewStatus, entities) {
+  return { status: 'open', review_status: reviewStatus, entity: entities };
+}
 async function loadFindings() {
   const state = listState.findings;
   try {
     const d = await api('/api/findings' + buildListQuery(Object.assign({}, state, {
-      extra: { review_status: selectedReviewStatus(), entity: selectedEntities() },
+      extra: findingsFilters(selectedReviewStatus(), selectedEntities()),
     })));
     showListError('findings', '');
     const rows = d.findings.map(f => `<tr>

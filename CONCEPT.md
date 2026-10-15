@@ -156,7 +156,10 @@ persistentem Speicher.
     `open_finding_count_desc`/`open_finding_count_asc`), Regeln (`supplier_asc`
     als Default, `supplier_desc`, `updated_at_desc`, `updated_at_asc`).
   - Die Findings-Sektion bietet zusätzlich eine Auswahl **„Prüfstatus“**
-    (`Alle`/`Offen`/`Durchgesehen`), die als `review_status` mitgesendet wird;
+    (`Alle`/`Offen`/`Durchgesehen`), die als `review_status` mitgesendet wird.
+    Der bestehende Finding-Filter `status=open` bleibt dabei erhalten und wird
+    mit dem gewählten `review_status` per UND kombiniert, sodass geprüfte
+    Findings einer noch offenen Rechnung nicht als „offen“ erscheinen;
     die Rechnungs-Sektion zeigt die Spalten „Findings offen“, „Offenes Volumen“
     und „Status“ (`review_status`).
   - „Zurück“/„Weiter“-Buttons blättern mit fester Seitengröße (25) über

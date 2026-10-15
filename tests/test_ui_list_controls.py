@@ -155,6 +155,54 @@ class ClientQueryBuildingTests(unittest.TestCase):
     @unittest.skipUnless(
         shutil.which("node"), "node is required to exercise the JS helpers"
     )
+    def test_findings_filters_keep_status_and_add_review_axis(self):
+        source = _read_index()
+        program = (
+            _extract_function(source, "findingsFilters")
+            + "\nprocess.stdout.write(JSON.stringify(["
+            + "findingsFilters('open', ['DE01']),"
+            + "findingsFilters('reviewed', []),"
+            + "findingsFilters('all', [])"
+            + "]));"
+        )
+        out = _run_js(program)
+        for filters in out:
+            self.assertEqual(
+                filters["status"],
+                "open",
+                "the finding-level status filter must never be dropped",
+            )
+        self.assertEqual(out[0]["review_status"], "open")
+        self.assertEqual(out[0]["entity"], ["DE01"])
+        self.assertEqual(out[1]["review_status"], "reviewed")
+        self.assertEqual(out[2]["review_status"], "all")
+
+    @unittest.skipUnless(
+        shutil.which("node"), "node is required to exercise the JS helpers"
+    )
+    def test_findings_query_sends_both_status_and_review_status(self):
+        source = _read_index()
+        program = (
+            _extract_function(source, "buildListQuery")
+            + "\n"
+            + _extract_function(source, "findingsFilters")
+            + "\nprocess.stdout.write(JSON.stringify(buildListQuery("
+            + "{ sort: 'amount_desc', limit: 25, offset: 0,"
+            + " extra: findingsFilters('open', []) })));"
+        )
+        out = _run_js(program)
+        self.assertEqual(
+            out,
+            "?status=open&review_status=open&sort=amount_desc&limit=25&offset=0",
+        )
+
+    def test_load_findings_uses_findings_filters(self):
+        source = _read_index()
+        self.assertIn("extra: findingsFilters(", source)
+
+    @unittest.skipUnless(
+        shutil.which("node"), "node is required to exercise the JS helpers"
+    )
     def test_range_label_matches_count_and_total(self):
         source = _read_index()
         program = (
