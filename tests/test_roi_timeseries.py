@@ -24,12 +24,31 @@ BUCKET_FIELDS = {
     "findings",
     "confirmed",
     "false_alarm",
+    "reviewed",
     "open",
     "open_amount",
     "precision",
     "confirmed_amount",
     "avoided_review_minutes",
     "avoided_review_cost_eur",
+    "open_review_minutes",
+    "open_review_cost_eur",
+}
+
+TOTAL_FIELDS = {
+    "buckets",
+    "findings",
+    "confirmed",
+    "false_alarm",
+    "reviewed",
+    "open",
+    "open_amount",
+    "precision",
+    "confirmed_amount",
+    "avoided_review_minutes",
+    "avoided_review_cost_eur",
+    "open_review_minutes",
+    "open_review_cost_eur",
 }
 
 
@@ -102,6 +121,66 @@ class TimeseriesStoreTests(unittest.TestCase):
             "avoided_review_cost_eur",
         ):
             self.assertEqual(bucket[field], report["totals"][field], field)
+
+    def test_open_load_fields_use_same_formulas(self):
+        self._finding(amount=10.0, feedback="confirmed")
+        self._finding(amount=20.0, feedback="false_alarm")
+        self._finding(amount=30.0, feedback=None)
+        self._finding(amount=40.0, feedback=None)
+
+        series = self.store.roi_timeseries(
+            self.settings, review_minutes=4.0, hourly_rate=45.0
+        )
+        bucket = series["buckets"][0]
+        self.assertEqual(set(series["totals"].keys()), TOTAL_FIELDS)
+        self.assertEqual(bucket["reviewed"], 2)
+        self.assertEqual(bucket["confirmed"], 1)
+        self.assertEqual(bucket["false_alarm"], 1)
+        self.assertEqual(bucket["open"], 2)
+        self.assertEqual(bucket["open_review_minutes"], 2 * 4.0)
+        self.assertEqual(
+            bucket["open_review_cost_eur"], round(2 * 4.0 / 60 * 45.0, 2)
+        )
+
+        totals = series["totals"]
+        self.assertEqual(totals["reviewed"], sum(b["reviewed"] for b in series["buckets"]))
+        self.assertEqual(totals["open"], sum(b["open"] for b in series["buckets"]))
+        self.assertEqual(
+            totals["open_review_minutes"],
+            round(sum(b["open_review_minutes"] for b in series["buckets"]), 2),
+        )
+        self.assertEqual(
+            totals["open_review_cost_eur"],
+            round(sum(b["open_review_cost_eur"] for b in series["buckets"]), 2),
+        )
+        self.assertEqual(totals["precision"], round(1 / 2, 4))
+
+    def test_totals_exactly_sum_new_fields_over_buckets(self):
+        self._finding(month="2026-01-10", cost_center="KST-1", feedback=None)
+        self._finding(month="2026-02-10", cost_center="KST-2", feedback="confirmed")
+        self._finding(month="2026-02-11", cost_center="KST-2", feedback=None)
+        self._finding(month="2026-02-12", cost_center="KST-2", feedback=None)
+
+        series = self.store.roi_timeseries(
+            self.settings, review_minutes=3.5, hourly_rate=60.0
+        )
+        self.assertEqual(len(series["buckets"]), 2)
+        totals = series["totals"]
+        for field in ("open", "reviewed"):
+            self.assertEqual(
+                totals[field], sum(b[field] for b in series["buckets"]), field
+            )
+        for field in ("open_review_minutes", "open_review_cost_eur"):
+            self.assertEqual(
+                totals[field],
+                round(sum(b[field] for b in series["buckets"]), 2),
+                field,
+            )
+        self.assertEqual(totals["open"], 3)
+        self.assertEqual(totals["open_review_minutes"], round(3 * 3.5, 2))
+        self.assertEqual(
+            totals["open_review_cost_eur"], round(round(3 * 3.5, 2) / 60 * 60.0, 2)
+        )
 
     def test_buckets_grouped_and_sorted(self):
         self._finding(month="2026-03-01", entity="DE02", cost_center="B")
@@ -360,6 +439,70 @@ class TimeseriesApiTests(ApiTestCase):
             round(sum(b["confirmed_amount"] for b in payload["buckets"]), 2),
         )
 
+    def test_open_load_fields_and_backward_compat(self):
+        reviewed_invoice = self._invoice(
+            "RE-1", cost_center="KST-1", invoice_date="2026-01-15"
+        )
+        for finding_id in reviewed_invoice["findings"]:
+            self.json_request(
+                "POST",
+                "/api/findings/%d/feedback" % finding_id,
+                {"verdict": "confirmed"},
+            )
+        open_invoice = self._invoice(
+            "RE-2", cost_center="KST-2", invoice_date="2026-02-15"
+        )
+        expected_open = len(open_invoice["findings"])
+
+        status, payload = self.json_request("GET", "/api/stats/roi/timeseries")
+        self.assertEqual(status, 200)
+        for field in (
+            "month",
+            "entity",
+            "cost_center",
+            "findings",
+            "confirmed",
+            "false_alarm",
+            "open",
+            "open_amount",
+            "precision",
+            "confirmed_amount",
+            "avoided_review_minutes",
+            "avoided_review_cost_eur",
+        ):
+            self.assertIn(field, payload["buckets"][0], field)
+        self.assertEqual(set(payload["totals"].keys()), TOTAL_FIELDS)
+
+        minutes = payload["parameters"]["review_minutes_per_finding"]
+        rate = payload["parameters"]["hourly_rate_eur"]
+        for bucket in payload["buckets"]:
+            self.assertEqual(
+                bucket["reviewed"], bucket["confirmed"] + bucket["false_alarm"]
+            )
+            self.assertEqual(
+                bucket["open_review_minutes"], round(bucket["open"] * minutes, 2)
+            )
+            self.assertEqual(
+                bucket["open_review_cost_eur"],
+                round(bucket["open_review_minutes"] / 60 * rate, 2),
+            )
+        totals = payload["totals"]
+        self.assertEqual(totals["reviewed"], sum(b["reviewed"] for b in payload["buckets"]))
+        self.assertEqual(totals["open"], sum(b["open"] for b in payload["buckets"]))
+        self.assertEqual(
+            totals["open_review_minutes"],
+            round(sum(b["open_review_minutes"] for b in payload["buckets"]), 2),
+        )
+        self.assertEqual(
+            totals["open_review_cost_eur"],
+            round(sum(b["open_review_cost_eur"] for b in payload["buckets"]), 2),
+        )
+        self.assertEqual(totals["open"], expected_open)
+        self.assertEqual(
+            totals["reviewed"], totals["confirmed"] + totals["false_alarm"]
+        )
+        self.assertEqual(totals["open_review_minutes"], round(expected_open * minutes, 2))
+
     def test_invalid_months_return_400(self):
         for path in (
             "/api/stats/roi/timeseries?months=0",
@@ -430,6 +573,9 @@ class TimeseriesApiTests(ApiTestCase):
         self.assertIn("roi-timeseries", raw)
         self.assertIn("cost-center-filter", raw)
         self.assertIn("/api/cost-centers", raw)
+        self.assertIn("Offener Aufwand (min)", raw)
+        self.assertIn("Offener Aufwand (EUR)", raw)
+        self.assertIn("open_review_cost_eur", raw)
 
 
 class DefaultCostCenterApiTests(ApiTestCase):

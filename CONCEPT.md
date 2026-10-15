@@ -23,6 +23,13 @@ vermiedene Fehlzahlungen um — je Lieferant, **je Gesellschaft** und zusätzlic
 **je Artikel**, damit sichtbar wird, welche Artikel und Positionen den Aufwand
 und die vermiedenen Zahlungen treiben.
 
+Die **ROI-Zeitreihe** (`GET /api/stats/roi/timeseries`) ergänzt den Nachweis um
+die zweite Controller-Frage im Quartalsreview: **Wo steht das Team aktuell unter
+Last, und welche Gesellschaft/Kostenstelle bindet als Nächstes Kapazität?**
+Neben dem vermiedenen Nutzen weist sie je Monat, Gesellschaft und Kostenstelle
+die noch **offenen Findings** und den daran gebundenen **Prüfaufwand**
+(`open_review_minutes`, `open_review_cost_eur`) aus.
+
 ## Intended users
 
 Finanz- und Kreditorenbuchhaltungs-Teams in KMU (5–50 Mitarbeitende) mit
@@ -34,7 +41,10 @@ konsolidiert nachweisen müssen. Die Anwender laden Buchhaltungsexporte und
 Referenzdaten hoch, prüfen die markierten Auffälligkeiten und geben pro Treffer
 Feedback (bestätigt / Fehlalarm). Die Teams nutzen den ROI-Nachweis als
 Argument im Preistest und schneiden die Regelprofile anhand der teuersten
-Artikelgruppen und Gesellschaften zu.
+Artikelgruppen und Gesellschaften zu. Im wiederkehrenden Quartalsreview nutzen
+sie die **ROI-Zeitreihe**, die neben dem vermiedenen Nutzen auch die **aktuelle
+Prüflast** (offene Findings und den daran gebundenen Aufwand) je Gesellschaft und
+Kostenstelle ausweist.
 
 ## Problem
 
@@ -254,16 +264,32 @@ persistentem Speicher.
     berechnet je Bucket **dieselben Formeln** wie `/api/stats/roi`:
     `avoided_review_minutes = confirmed × review_minutes`,
     `avoided_review_cost_eur = minutes / 60 × hourly_rate`, dazu `confirmed_amount`
-    (vermiedene Fehlzahlungen) und `open_amount`. Buckets sind nach `month`,
-    `entity`, `cost_center` aufsteigend sortiert; `totals` ist die exakte Summe
-    über die Buckets (Precision neu aus den aggregierten Zählern, nicht
-    gemittelt), `parameters` weist die wirksamen Annahmen und Filter aus.
+    (vermiedene Fehlzahlungen) und `open_amount`. Zusätzlich weist jeder Bucket
+    die **aktuelle Prüflast** aus: `open` (noch offene Findings),
+    `reviewed = confirmed + false_alarm` (bereits bewertete Findings),
+    `open_review_minutes = open × review_minutes` und
+    `open_review_cost_eur = open_review_minutes / 60 × hourly_rate` (auf zwei
+    Nachkommastellen). Buckets sind nach `month`, `entity`, `cost_center`
+    aufsteigend sortiert; `totals` enthält dieselben Felder und ist die exakte
+    Summe über die Buckets — auch für `open`, `reviewed`,
+    `open_review_minutes` und `open_review_cost_eur` (Precision neu aus den
+    aggregierten Zählern, nicht gemittelt). `parameters` weist die wirksamen
+    Annahmen und Filter aus. Die bisherigen Felder (`month`, `entity`,
+    `cost_center`, `findings`, `confirmed`, `false_alarm`, `open`,
+    `open_amount`, `precision`, `confirmed_amount`, `avoided_review_minutes`,
+    `avoided_review_cost_eur`) behalten Name, Typ und Bedeutung; der Endpoint
+    bleibt ohne neue Parameter vollständig rückwärtskompatibel. Es kommen keine
+    neuen Tabellen, Spalten oder Laufzeit-Abhängigkeiten hinzu — die Werte
+    werden aus den bestehenden Aggregaten über `findings` und `invoices`
+    berechnet.
   - `?months=` (positive Ganzzahl, Default `12`, ungültig → `400`) begrenzt das
     Fenster, `?entity=` und `?cost_center=` filtern mehrfach. Unbekannte
     Filterwerte sind keine Fehlbedienung und liefern leere Buckets.
   - Die Web-Oberfläche zeigt die Sektion „ROI-Zeitreihe“ mit Zeitraum-Selektor,
     Gesellschafts- und Kostenstellen-Mehrfachauswahl und der Tabelle je Monat;
-    ohne Daten erscheint ein Hinweis, bei `400` eine sichtbare Fehlermeldung
+    die neuen Spalten „Offen“, „Offener Aufwand (min)“ und „Offener Aufwand
+    (EUR)“ erscheinen sowohl in der Monatstabelle als auch in einer Summenzeile.
+    Ohne Daten erscheint ein Hinweis, bei `400` eine sichtbare Fehlermeldung
     ohne Verlust der zuletzt geladenen Ansicht.
 - **Wöchentlicher Digest** als E-Mail-fähiger HTML-Report und als JSON.
   - Der Digest berücksichtigt die gewählten Gesellschaften (`?entity=` bzw.
@@ -399,6 +425,12 @@ priorisiert die Freigabe-Entscheidung.
    Schreibweisen als eine Gruppe erscheinen) und **OCR-/PDF-Extraktion** (damit
    die Positions- und Artikelnamen nicht mehr aus strukturierten Exporten
    stammen müssen). Beide bauen auf der jetzigen Gruppenstruktur auf.
+8. **Kapazitäts-/Priorisierungssicht aus der offenen Last — nächster Schritt.**
+   Aufbauend auf `open`, `open_review_minutes` und `open_review_cost_eur` der
+   ROI-Zeitreihe: eine Sicht, die Gesellschaften und Kostenstellen nach dem
+   **gebundenen offenen Prüfaufwand** priorisiert und daraus eine Reihenfolge
+   „was zuerst abarbeiten“ ableitet — damit die Teams ihre Kapazität gezielt
+   dorthin lenken, wo die meiste offene Prüflast liegt.
 
 ## Validation plan (Bezug zur Produkthypothese)
 
@@ -422,7 +454,10 @@ Beitrag jeder Gesellschaft getrennt zu belegen. Die **ROI-Zeitreihe**
 Benefit-Reporting**: Sie zeigt die vermiedenen Kosten und Fehlzahlungen je Monat,
 Gesellschaft und Kostenstelle und macht so im wiederholten Quartalsreview
 nachweisbar, ob der Nutzen wächst, flach bleibt oder schrumpft und welche
-Kostenstelle dafür verantwortlich ist. Als zusätzliche Auswertungsgrundlage
+Kostenstelle dafür verantwortlich ist. Zugleich beantwortet sie mit `open`,
+`open_review_minutes` und `open_review_cost_eur` die zweite Controller-Frage —
+*welche Gesellschaft oder Kostenstelle aktuell Prüfkapazität bindet* — und macht
+sichtbar, wo das Team als Nächstes ansetzen sollte. Als zusätzliche Auswertungsgrundlage
 dient das **Abweichungsvolumen je Artikel pro Rechnung** aus der
 Gruppenansicht (`items`/`items_total_amount` in `GET /api/invoices/:id`): Es
 zeigt im Concierge-Test, welche Artikel und Positionen — auch bei Rechnungen

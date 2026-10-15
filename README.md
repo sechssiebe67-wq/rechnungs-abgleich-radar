@@ -66,7 +66,7 @@ python3 -m unittest discover -s tests -v
 | `GET /api/stats/by-supplier` | Precision, Findings und offenes Volumen je Lieferant inkl. angewendeter Regeln (`?entity=`) |
 | `GET /api/stats/rule-impact` | Vorher/Nachher-Vergleich der Findings und Precision je Lieferant vor/nach dem letzten Regel-Update (`?entity=`) |
 | `GET /api/stats/roi` | ROI-Nachweis: vermiedener Prüfaufwand und vermiedene Fehlzahlungen aus dem Feedback, je Lieferant, je Gesellschaft, je Artikel und gesamt (`?review_minutes=`, `?hourly_rate=`, `?article_limit=`, `?entity=`) |
-| `GET /api/stats/roi/timeseries` | ROI-Zeitreihe je `(Monat, Gesellschaft, Kostenstelle)` mit denselben Kennzahlen wie `/api/stats/roi`, plus `totals` und `parameters` (`?months=`, `?entity=`, `?cost_center=`, `?review_minutes=`, `?hourly_rate=`) |
+| `GET /api/stats/roi/timeseries` | ROI-Zeitreihe je `(Monat, Gesellschaft, Kostenstelle)` mit denselben Kennzahlen wie `/api/stats/roi`, zusätzlich offene Findings und gebundener Aufwand (`open`, `reviewed`, `open_review_minutes`, `open_review_cost_eur`), plus `totals` und `parameters` (`?months=`, `?entity=`, `?cost_center=`, `?review_minutes=`, `?hourly_rate=`) |
 | `GET /api/entities` | Sortierte Liste der in Rechnungen vorkommenden Gesellschaften |
 | `GET /api/cost-centers` | Sortierte, deduplizierte Liste der nicht-leeren Kostenstellen in Rechnungen |
 | `POST /api/suppliers` | Lieferant anlegen |
@@ -565,19 +565,25 @@ Kostenstelle einen Bucket mit exakt denselben Kennzahlen wie `/api/stats/roi`:
 | `findings` | Anzahl Findings im Bucket |
 | `confirmed` | bestätigte Findings |
 | `false_alarm` | Fehlalarme |
+| `reviewed` | bereits bewertete Findings (`confirmed + false_alarm`) |
 | `open` | offene Findings |
 | `open_amount` | Summe der Beträge offener Findings (EUR) |
 | `precision` | `confirmed / (confirmed + false_alarm)`, `null` ohne Feedback |
 | `confirmed_amount` | Summe der Beträge bestätigter Findings (vermiedene Fehlzahlungen, EUR) |
 | `avoided_review_minutes` | `confirmed × review_minutes_per_finding` |
 | `avoided_review_cost_eur` | `avoided_review_minutes / 60 × hourly_rate` |
+| `open_review_minutes` | `open × review_minutes_per_finding` (gebundener Prüfaufwand der offenen Findings) |
+| `open_review_cost_eur` | `open_review_minutes / 60 × hourly_rate` (auf zwei Nachkommastellen) |
 
 Buckets sind nach `month`, dann `entity`, dann `cost_center` aufsteigend
-sortiert. `totals` ist die exakte Summe über die zurückgegebenen Buckets; die
-Precision in `totals` wird aus den aggregierten Zählern neu berechnet (nicht
-gemittelt). `parameters` weist die wirksamen Annahmen (`months`,
-`review_minutes_per_finding`, `hourly_rate_eur`) sowie die angewendeten Filter
-(`entities`, `cost_centers`) aus.
+sortiert. `totals` enthält dieselben Felder und ist die exakte Summe über die
+zurückgegebenen Buckets — auch für `open`, `reviewed`, `open_review_minutes` und
+`open_review_cost_eur`; die Precision in `totals` wird aus den aggregierten
+Zählern neu berechnet (nicht gemittelt). `parameters` weist die wirksamen
+Annahmen (`months`, `review_minutes_per_finding`, `hourly_rate_eur`) sowie die
+angewendeten Filter (`entities`, `cost_centers`) aus. Die bereits vorhandenen
+Felder behalten Name, Typ und Bedeutung; der Endpoint bleibt ohne neue Parameter
+vollständig rückwärtskompatibel.
 
 | Parameter | Bedeutung | Validierung |
 | --- | --- | --- |
@@ -587,9 +593,17 @@ gemittelt). `parameters` weist die wirksamen Annahmen (`months`,
 | `review_minutes` | Annahme Minuten pro bestätigtem Finding | nicht-negative Zahl, sonst `400` |
 | `hourly_rate` | Annahme Stundensatz in EUR | nicht-negative Zahl, sonst `400` |
 
+Die offenen Findings und der daran gebundene Aufwand (`open`,
+`open_review_minutes`, `open_review_cost_eur`) erscheinen ohne jeden neuen
+Parameter; ein Aufruf wie zuvor liefert unverändert die bisherigen Felder und
+zusätzlich die neuen:
+
 ```sh
 # ROI-Zeitreihe der letzten 12 Monate, nur DE01 und Kostenstelle KST-100
 curl -sS 'http://localhost:8080/api/stats/roi/timeseries?months=12&entity=DE01&cost_center=KST-100'
+
+# Ohne neue Parameter bleiben alle bisherigen Felder erhalten
+curl -sS 'http://localhost:8080/api/stats/roi/timeseries' | python3 -m json.tool
 
 # Verfügbare Kostenstellen
 curl -sS http://localhost:8080/api/cost-centers
@@ -602,28 +616,34 @@ curl -sS http://localhost:8080/api/cost-centers
       "month": "2026-01",
       "entity": "DE01",
       "cost_center": "KST-100",
-      "findings": 3,
+      "findings": 4,
       "confirmed": 2,
       "false_alarm": 1,
-      "open": 0,
-      "open_amount": 0.0,
+      "reviewed": 3,
+      "open": 1,
+      "open_amount": 12.0,
       "precision": 0.6667,
       "confirmed_amount": 84.0,
       "avoided_review_minutes": 8.0,
-      "avoided_review_cost_eur": 6.0
+      "avoided_review_cost_eur": 6.0,
+      "open_review_minutes": 4.0,
+      "open_review_cost_eur": 3.0
     }
   ],
   "totals": {
     "buckets": 1,
-    "findings": 3,
+    "findings": 4,
     "confirmed": 2,
     "false_alarm": 1,
-    "open": 0,
-    "open_amount": 0.0,
+    "reviewed": 3,
+    "open": 1,
+    "open_amount": 12.0,
     "precision": 0.6667,
     "confirmed_amount": 84.0,
     "avoided_review_minutes": 8.0,
-    "avoided_review_cost_eur": 6.0
+    "avoided_review_cost_eur": 6.0,
+    "open_review_minutes": 4.0,
+    "open_review_cost_eur": 3.0
   },
   "parameters": {
     "months": 12,
@@ -638,10 +658,13 @@ curl -sS http://localhost:8080/api/cost-centers
 Die Web-Oberfläche zeigt die Sektion „ROI-Zeitreihe“ mit einem
 Zeitraum-Selektor (3/6/12/24 Monate), der bestehenden Gesellschafts- und einer
 neuen Kostenstellen-Mehrfachauswahl sowie der Tabelle `Monat`, `Gesellschaft`,
-`Kostenstelle`, `Findings`, `bestätigt`, `Precision`, `vermiedene Kosten (EUR)`,
-`vermiedene Fehlzahlungen (EUR)`. Ohne Daten erscheint ein Hinweis statt einer
-leeren Tabelle; bei `400` wird eine sichtbare Fehlermeldung angezeigt, ohne die
-zuletzt geladene Ansicht zu verwerfen.
+`Kostenstelle`, `Findings`, `bestätigt`, `Offen`, `Precision`, `Offener Aufwand
+(min)`, `Offener Aufwand (EUR)`, `vermiedene Kosten (EUR)`, `vermiedene
+Fehlzahlungen (EUR)`. Die Spalten „Offen“, „Offener Aufwand (min)“ und „Offener
+Aufwand (EUR)“ zeigt sie zusätzlich in einer Summenzeile über alle Buckets. Ohne
+Daten erscheint ein Hinweis statt einer leeren Tabelle; bei `400` wird eine
+sichtbare Fehlermeldung angezeigt, ohne die zuletzt geladene Ansicht zu
+verwerfen.
 
 ## Wöchentlicher Digest
 
