@@ -79,7 +79,7 @@ python3 -m unittest discover -s tests -v
 | `GET /api/invoices` | Liste aller Rechnungen; optional seitenweise (`?limit=`, `?offset=`) und sortiert (`?sort=`) |
 | `POST /api/invoices` | Rechnung per JSON anlegen und sofort abgleichen |
 | `POST /api/invoices/import` | Rechnungen per CSV (ein Datensatz pro Position) importieren |
-| `GET /api/invoices/:id` | Nachvollziehbarkeit: was wurde verglichen, was wich ab |
+| `GET /api/invoices/:id` | Nachvollziehbarkeit: was wurde verglichen, was wich ab; Findings je Artikel/Position als `items` + `items_total_amount` |
 | `POST /api/reconcile` | Alle Rechnungen (oder `{"invoice_id": …}`) neu abgleichen |
 | `GET /api/findings?status=open&min_amount=&entity=` | Priorisierte Auffälligkeiten; optional seitenweise (`?limit=`, `?offset=`) und sortiert (`?sort=`) |
 | `POST /api/findings/:id/feedback` | `{"verdict": "confirmed"|"false_alarm"}` |
@@ -171,6 +171,79 @@ curl -sS 'http://localhost:8080/api/supplier-rules?limit=5&sort=updated_at_desc'
 curl -sS 'http://localhost:8080/api/invoices'
 curl -sS 'http://localhost:8080/api/supplier-rules'
 ```
+
+### Positionen je Rechnung
+
+`GET /api/invoices/:id` liefert neben der bisherigen Einzelvergleichs-Liste
+(`invoice`, `findings`, `applied_rule`, …) die zusätzlichen Felder `items` und
+`items_total_amount`. `items` gruppiert die Findings je Rechnungsposition nach
+Artikel/Position und macht so auch bei Rechnungen mit vielen Zeilen sichtbar,
+welcher Artikel das Abweichungsvolumen treibt.
+
+- `items_total_amount`: Summe der `amount`-Felder **aller** Findings der
+  Rechnung, auf zwei Nachkommastellen gerundet.
+- Jede Gruppe in `items` enthält `article` (Anzeigename aus der
+  Rechnungsposition), `position` (Integer oder `null`), `finding_count`,
+  `amount` (Summe der Finding-Beträge der Gruppe), `finding_types` (sortiert und
+  dedupliziert) sowie `findings` (die zugehörigen Findings mit `id`,
+  `finding_type`, `amount`, `message`).
+- Findings ohne Position (`missing_po`, `duplicate`) laufen unter
+  `article == "(ohne Position)"` mit `position == null`.
+- Gruppen, die zu einer echten Rechnungsposition gehören, tragen weiterhin die
+  bisherigen Vergleichsfelder `quantity`, `unit_price`, `line_total`,
+  `reference_price` und `reference_source`; ohne Findings ist `items` leer.
+- Die Liste ist absteigend nach `amount` sortiert, bei Gleichstand aufsteigend
+  nach `article`.
+- Die bisherigen Felder (`invoice`, `findings`, `applied_rule`, …) bleiben
+  unverändert; `items` und `items_total_amount` sind ergänzend und brechen keine
+  bestehenden Aufrufer. Es kommen keine neuen Tabellen, Endpunkte oder
+  Laufzeit-Abhängigkeiten hinzu.
+
+```sh
+curl -sS http://localhost:8080/api/invoices/1
+```
+
+```json
+{
+  "invoice": {
+    "id": 1,
+    "invoice_number": "RE-1001",
+    "supplier": "ACME GmbH",
+    "total_amount": 42.0
+  },
+  "items": [
+    {
+      "article": "Schraube M8",
+      "position": 1,
+      "finding_count": 2,
+      "amount": 12.0,
+      "finding_types": ["price_deviation", "quantity_deviation"],
+      "findings": [
+        {"id": 7, "finding_type": "price_deviation", "amount": 10.0, "message": "…"},
+        {"id": 8, "finding_type": "quantity_deviation", "amount": 2.0, "message": "…"}
+      ]
+    },
+    {
+      "article": "(ohne Position)",
+      "position": null,
+      "finding_count": 1,
+      "amount": 42.0,
+      "finding_types": ["missing_po"],
+      "findings": [
+        {"id": 9, "finding_type": "missing_po", "amount": 42.0, "message": "…"}
+      ]
+    }
+  ],
+  "items_total_amount": 54.0,
+  "findings": ["…"],
+  "applied_rule": {"…": "…"}
+}
+```
+
+Die Web-Oberfläche zeigt die Sektion „Rechnungs-Audit“ mit der Tabelle
+„Positionen“ (Artikel, Position, Anzahl Findings, Abweichungsbetrag in EUR,
+Finding-Typen) und einem „Audit“-Button je Rechnung; ohne Findings erscheint ein
+Hinweis statt einer leeren Tabelle.
 
 ### CSV-Format für Rechnungsimport
 

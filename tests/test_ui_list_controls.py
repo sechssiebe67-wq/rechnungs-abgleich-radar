@@ -89,6 +89,14 @@ class ClientControlStructureTests(unittest.TestCase):
             for suffix in ("sort", "range", "prev", "next", "error"):
                 self.assertIn('id="%s-%s"' % (prefix, suffix), source)
 
+    def test_audit_position_section_is_present(self):
+        source = _read_index()
+        self.assertIn("Positionen", source)
+        self.assertIn('id="audit-items"', source)
+        self.assertIn('id="audit-hint"', source)
+        self.assertIn("loadAudit()", source)
+        self.assertIn("/api/invoices/", source)
+
 
 class ClientQueryBuildingTests(unittest.TestCase):
     """Exercise the extracted ``buildListQuery``/``rangeLabel`` helpers."""
