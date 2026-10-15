@@ -6,6 +6,8 @@ the product stays standalone and cheap to operate in the k3s cluster.
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 import os
 import sys
@@ -38,6 +40,77 @@ from .ingest import (
     supplier_rule_from_dict,
 )
 from .reconcile import invoice_audit, reconcile_all, reconcile_invoice
+
+
+# Stable column order for the CSV exports. Keeping the names and order in one
+# place makes the download contract explicit and easy to test.
+FINDING_EXPORT_COLUMNS = (
+    "id",
+    "invoice_id",
+    "invoice_number",
+    "supplier",
+    "entity",
+    "cost_center",
+    "finding_type",
+    "amount",
+    "status",
+    "feedback",
+    "message",
+    "created_at",
+)
+
+INVOICE_EXPORT_COLUMNS = (
+    "id",
+    "invoice_number",
+    "supplier",
+    "entity",
+    "cost_center",
+    "invoice_date",
+    "total_amount",
+    "finding_count",
+    "open_finding_count",
+    "reviewed_finding_count",
+    "open_amount",
+    "review_status",
+    "created_at",
+)
+
+
+# Leading characters that spreadsheet programs may interpret as the start of a
+# formula or DDE payload. Neutralizing user-controlled text cells prevents CSV
+# formula injection (CWE-1236) when a download is opened in Excel/Calc.
+_CSV_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _csv_cell(value):
+    """Render a single CSV cell, neutralizing spreadsheet formula injection.
+
+    ``None`` becomes an empty field. User-controlled *strings* that start with a
+    formula-trigger character get a leading apostrophe, so Excel/LibreOffice
+    treat them as text instead of executing ``=...``/``+...``/``-...``/``@...``
+    or DDE payloads. Non-string values (the numeric columns from the database)
+    are written unchanged, so negative numbers keep their native representation.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str) and value[:1] in _CSV_FORMULA_PREFIXES:
+        return "'" + value
+    return value
+
+
+def _csv_bytes(header, rows) -> bytes:
+    """Render ``rows`` as UTF-8 CSV with the given header and CRLF line endings.
+
+    Uses the standard-library :mod:`csv` writer only, so the exports add no new
+    runtime dependency. ``None`` values are written as empty fields and
+    user-controlled text is neutralized against CSV formula injection.
+    """
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, lineterminator="\r\n")
+    writer.writerow(header)
+    for row in rows:
+        writer.writerow([_csv_cell(value) for value in row])
+    return buffer.getvalue().encode("utf-8")
 
 
 def _non_negative_query_float(
@@ -218,6 +291,19 @@ class RadarHandler(BaseHTTPRequestHandler):
 
     def _send_error_json(self, status: int, message: str) -> None:
         self._send_json({"error": message}, status=status)
+
+    def _send_download(self, body: bytes, content_type: str, filename: str) -> None:
+        """Send a file download with an attachment disposition."""
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header(
+            "Content-Disposition", 'attachment; filename="%s"' % filename
+        )
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
 
     def do_GET(self) -> None:  # noqa: N802
         self._dispatch("GET")
@@ -445,8 +531,18 @@ class RadarHandler(BaseHTTPRequestHandler):
         limit = _non_negative_query_int(query, "limit")
         offset = _non_negative_query_int(query, "offset")
         sort = _whitelisted_sort(query, "sort", INVOICE_ORDER_BY)
-        invoices = self.store.list_invoices(limit=limit, offset=offset, order_by=sort)
-        total_count = self.store.count_invoices()
+        entities = _query_list(query, "entity") or None
+        cost_centers = _query_list(query, "cost_center") or None
+        invoices = self.store.list_invoices(
+            limit=limit,
+            offset=offset,
+            order_by=sort,
+            entities=entities,
+            cost_centers=cost_centers,
+        )
+        total_count = self.store.count_invoices(
+            entities=entities, cost_centers=cost_centers
+        )
         self._send_json(
             {
                 "invoices": invoices,
@@ -456,6 +552,22 @@ class RadarHandler(BaseHTTPRequestHandler):
                 "offset": offset,
                 "sort": sort or DEFAULT_INVOICE_ORDER,
             }
+        )
+
+    def h_invoices_export(self, params, query) -> None:
+        entities = _query_list(query, "entity") or None
+        cost_centers = _query_list(query, "cost_center") or None
+        invoices = self.store.list_invoices(
+            entities=entities, cost_centers=cost_centers
+        )
+        rows = [
+            [invoice.get(column) for column in INVOICE_EXPORT_COLUMNS]
+            for invoice in invoices
+        ]
+        self._send_download(
+            _csv_bytes(INVOICE_EXPORT_COLUMNS, rows),
+            "text/csv; charset=utf-8",
+            "invoices.csv",
         )
 
     def h_add_invoice(self, params, query) -> None:
@@ -539,6 +651,27 @@ class RadarHandler(BaseHTTPRequestHandler):
             }
         )
 
+    def h_findings_export(self, params, query) -> None:
+        status = query.get("status", [None])[0]
+        min_amount = query.get("min_amount", [None])[0]
+        entities = _query_list(query, "entity") or None
+        review_status = _review_status(query)
+        findings = self.store.list_findings(
+            status=status,
+            min_amount=float(min_amount) if min_amount else None,
+            entities=entities,
+            review_status=review_status,
+        )
+        rows = [
+            [finding.get(column) for column in FINDING_EXPORT_COLUMNS]
+            for finding in findings
+        ]
+        self._send_download(
+            _csv_bytes(FINDING_EXPORT_COLUMNS, rows),
+            "text/csv; charset=utf-8",
+            "findings.csv",
+        )
+
     def h_feedback(self, params, query) -> None:
         data = self._json_body()
         verdict = str(data.get("verdict", "")).strip()
@@ -614,9 +747,11 @@ def build_router() -> Router:
     router.add("GET", "/api/invoices", RadarHandler.h_invoices)
     router.add("POST", "/api/invoices", RadarHandler.h_add_invoice)
     router.add("POST", "/api/invoices/import", RadarHandler.h_import_invoices)
+    router.add("GET", "/api/invoices/export", RadarHandler.h_invoices_export)
     router.add("GET", "/api/invoices/:id", RadarHandler.h_get_invoice)
     router.add("POST", "/api/reconcile", RadarHandler.h_reconcile)
     router.add("GET", "/api/findings", RadarHandler.h_findings)
+    router.add("GET", "/api/findings/export", RadarHandler.h_findings_export)
     router.add("POST", "/api/findings/:id/feedback", RadarHandler.h_feedback)
     router.add("GET", "/api/digest/weekly", RadarHandler.h_digest)
     router.add("GET", "/api/digest/weekly.html", RadarHandler.h_digest_html)

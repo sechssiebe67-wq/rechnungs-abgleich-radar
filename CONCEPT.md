@@ -47,7 +47,9 @@ Prüflast** (offene Findings und den daran gebundenen Aufwand) je Gesellschaft u
 Kostenstelle ausweist. Bei der Abarbeitung des Wochen-Digests und der
 Findings-Liste arbeiten sie zuerst die Rechnungen mit dem **größten offenen
 Prüfvolumen** ab (viele offene Findings bzw. hoher offener Betrag), weil dort pro
-Rechnung die meiste Arbeit gebündelt ist.
+Rechnung die meiste Arbeit gebündelt ist. Die Teams exportieren die Findings- und
+Rechnungsliste als CSV, um sie in Excel weiterzuverarbeiten, mit dem Einkauf zu
+teilen oder als Prüfnachweis abzulegen.
 
 ## Problem
 
@@ -383,6 +385,39 @@ persistentem Speicher.
     dem Server herunterfährt.
   - Nur Standardbibliothek (`urllib.request`, `smtplib`), keine neuen
     Laufzeit-Abhängigkeiten.
+- **CSV-Export** (`GET /api/findings/export`, `GET /api/invoices/export`):
+  Für Kreditorenbuchhaltung, Einkauf und Revision lassen sich die priorisierte
+  Findings-Liste und die Rechnungsliste als Datei herunterladen, um sie in Excel
+  weiterzuverarbeiten, mit dem Einkauf zu teilen oder als Prüfnachweis abzulegen.
+  - `GET /api/findings/export` liefert `text/csv; charset=utf-8` mit
+    `Content-Disposition: attachment; filename="findings.csv"` und den stabilen
+    Spalten `id`, `invoice_id`, `invoice_number`, `supplier`, `entity`,
+    `cost_center`, `finding_type`, `amount`, `status`, `feedback`, `message`,
+    `created_at`. Es gelten dieselben Filter wie `GET /api/findings` (`status`,
+    `min_amount`, `entity`, `review_status`).
+  - `GET /api/invoices/export` liefert `text/csv; charset=utf-8` mit
+    `Content-Disposition: attachment; filename="invoices.csv"` und den Spalten
+    `id`, `invoice_number`, `supplier`, `entity`, `cost_center`, `invoice_date`,
+    `total_amount`, `finding_count`, `open_finding_count`,
+    `reviewed_finding_count`, `open_amount`, `review_status`, `created_at`. Es
+    gelten dieselben Filter wie `GET /api/invoices` (`entity`, `cost_center`);
+    `GET /api/invoices` akzeptiert diese beiden Filter jetzt ebenfalls
+    (rückwärtskompatibel, da optional).
+  - Beide Exporte nutzen den `csv`-Writer der Python-Standardbibliothek mit
+    `\r\n`-Zeilenende und `utf-8`-Kodierung; es kommen keine neuen
+    Laufzeit-Abhängigkeiten und keine neuen Tabellen oder Spalten hinzu.
+    Unbekannte validierte Filterwerte (z. B. `review_status=foo`) liefern `400`
+    mit JSON-Fehlerkörper statt einer CSV-Datei.
+  - User-kontrollierte Textzellen (`invoice_number`, `supplier`, `entity`,
+    `cost_center`, `message`) werden gegen CSV-Formelinjektion (CWE-1236)
+    abgesichert: Beginnt eine Textzelle mit `=`, `+`, `-`, `@`, Tabulator oder
+    CR, erhält sie ein führendes Apostroph, damit Excel/LibreOffice sie als Text
+    statt als Formel/DDE-Payload interpretiert. Numerische Spalten bleiben
+    unverändert.
+  - Die Web-Oberfläche zeigt in der Findings- und der Rechnungs-Sektion je einen
+    Button **„Als CSV exportieren“**, der die aktuell gewählten Filter als
+    Query-Parameter an den jeweiligen Export-Endpunkt hängt. Die Rechnungsliste
+    verwendet denselben Gesellschaftsfilter wie ihr Export.
 - **Betrieb:** `GET /healthz`, Dockerfile (linux/amd64 + linux/arm64), Helm-Chart
   unter `deploy/helm/rechnungs-abgleich-radar/`, nicht-root Ausführung,
   optionale persistente SQLite-Ablage.
@@ -477,6 +512,14 @@ priorisiert die Freigabe-Entscheidung.
    **Wochen-Digest** anbieten, damit der Digest nur noch die noch nicht
    durchgesehenen Rechnungen ausweist — und darauf aufbauend die Priorisierung
    ganzer Gesellschaften/Kostenstellen nach gebundenem offenem Prüfaufwand.
+9. **CSV-Export der Findings- und Rechnungsliste — umgesetzt.** Über
+   `GET /api/findings/export` und `GET /api/invoices/export` laden
+   Kreditorenbuchhaltung, Einkauf und Revision die beiden Listen mit stabilen
+   Spaltennamen und denselben Filtern wie die JSON-Endpunkte als CSV herunter,
+   um sie in Excel weiterzuverarbeiten oder als Prüfnachweis abzulegen.
+   **Nächster Schritt:** eine optionale Spaltenauswahl über
+   `?columns=spalte1,spalte2` (Whitelist je Endpoint, Default = alle Spalten),
+   damit Nutzer nur die für sie relevanten Spalten exportieren.
 
 ## Validation plan (Bezug zur Produkthypothese)
 

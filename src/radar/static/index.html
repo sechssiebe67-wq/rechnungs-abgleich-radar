@@ -91,6 +91,7 @@
       <span class="muted" id="findings-range">…</span>
       <button class="secondary" id="findings-prev" onclick="pageList('findings', -1)">Zurück</button>
       <button class="secondary" id="findings-next" onclick="pageList('findings', 1)">Weiter</button>
+      <button class="secondary" id="findings-export" onclick="exportFindings()">Als CSV exportieren</button>
       <span class="error" id="findings-error"></span>
     </div>
     <table>
@@ -106,6 +107,7 @@
       <span class="muted" id="invoices-range">…</span>
       <button class="secondary" id="invoices-prev" onclick="pageList('invoices', -1)">Zurück</button>
       <button class="secondary" id="invoices-next" onclick="pageList('invoices', 1)">Weiter</button>
+      <button class="secondary" id="invoices-export" onclick="exportInvoices()">Als CSV exportieren</button>
       <span class="error" id="invoices-error"></span>
     </div>
     <table>
@@ -518,6 +520,23 @@ function selectedReviewStatus() {
 function findingsFilters(reviewStatus, entities) {
   return { status: 'open', review_status: reviewStatus, entity: entities };
 }
+function invoiceFilters(entities) {
+  return { entity: entities };
+}
+function exportFindings() {
+  const parts = ['status=open'];
+  const review = selectedReviewStatus();
+  if (review && review !== 'all') parts.push('review_status=' + encodeURIComponent(review));
+  selectedEntities().forEach(e => parts.push('entity=' + encodeURIComponent(e)));
+  window.location.href = '/api/findings/export?' + parts.join('&');
+}
+function exportInvoices() {
+  const entities = selectedEntities();
+  const query = entities.length
+    ? '?' + entities.map(e => 'entity=' + encodeURIComponent(e)).join('&')
+    : '';
+  window.location.href = '/api/invoices/export' + query;
+}
 async function loadFindings() {
   const state = listState.findings;
   try {
@@ -541,7 +560,9 @@ async function loadFindings() {
 }
 async function loadInvoices() {
   try {
-    const d = await api('/api/invoices' + buildListQuery(listState.invoices));
+    const d = await api('/api/invoices' + buildListQuery(Object.assign({}, listState.invoices, {
+      extra: invoiceFilters(selectedEntities()),
+    })));
     showListError('invoices', '');
     const rows = d.invoices.map(i => `<tr>
       <td>${esc(i.invoice_number)}</td>
