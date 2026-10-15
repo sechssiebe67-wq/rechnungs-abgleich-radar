@@ -279,6 +279,28 @@ class RadarHandler(BaseHTTPRequestHandler):
     def h_entities(self, params, query) -> None:
         self._send_json({"entities": self.store.list_entities()})
 
+    def h_cost_centers(self, params, query) -> None:
+        self._send_json({"cost_centers": self.store.list_cost_centers()})
+
+    def h_roi_timeseries(self, params, query) -> None:
+        months = _non_negative_query_int(query, "months")
+        if months is not None and months < 1:
+            raise ValueError("months must be >= 1")
+        review_minutes = _non_negative_query_float(query, "review_minutes")
+        hourly_rate = _non_negative_query_float(query, "hourly_rate")
+        entities = _query_list(query, "entity") or None
+        cost_centers = _query_list(query, "cost_center") or None
+        self._send_json(
+            self.store.roi_timeseries(
+                self.settings,
+                months,
+                entities,
+                cost_centers,
+                review_minutes,
+                hourly_rate,
+            )
+        )
+
     def h_suppliers(self, params, query) -> None:
         self._send_json({"suppliers": self.store.list_suppliers()})
 
@@ -413,7 +435,9 @@ class RadarHandler(BaseHTTPRequestHandler):
         data = self._json_body()
         if not data.get("invoice_number") or not data.get("supplier"):
             raise ValueError("invoice_number and supplier are required")
-        invoice = invoice_from_dict(data, self.settings.default_entity)
+        invoice = invoice_from_dict(
+            data, self.settings.default_entity, self.settings.default_cost_center
+        )
         invoice_id = self.store.add_invoice(invoice)
         finding_ids = reconcile_invoice(self.store, invoice_id, self.settings)
         self._send_json(
@@ -422,7 +446,11 @@ class RadarHandler(BaseHTTPRequestHandler):
         )
 
     def h_import_invoices(self, params, query) -> None:
-        invoices = invoices_from_csv(self._text_body(), self.settings.default_entity)
+        invoices = invoices_from_csv(
+            self._text_body(),
+            self.settings.default_entity,
+            self.settings.default_cost_center,
+        )
         ids: List[int] = []
         findings = 0
         for invoice in invoices:
@@ -525,7 +553,9 @@ def build_router() -> Router:
     router.add("GET", "/api/stats/by-supplier", RadarHandler.h_stats_by_supplier)
     router.add("GET", "/api/stats/rule-impact", RadarHandler.h_rule_impact)
     router.add("GET", "/api/stats/roi", RadarHandler.h_roi)
+    router.add("GET", "/api/stats/roi/timeseries", RadarHandler.h_roi_timeseries)
     router.add("GET", "/api/entities", RadarHandler.h_entities)
+    router.add("GET", "/api/cost-centers", RadarHandler.h_cost_centers)
     router.add("GET", "/api/suppliers", RadarHandler.h_suppliers)
     router.add("POST", "/api/suppliers", RadarHandler.h_add_supplier)
     router.add("GET", "/api/supplier-rules", RadarHandler.h_supplier_rules)

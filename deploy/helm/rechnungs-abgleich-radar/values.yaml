@@ -46,6 +46,10 @@ config:
   # only: existing/imported invoices keep their own entity and the database
   # default stays ``default``.
   defaultEntity: "default"
+  # Cost center assigned to new invoices without an explicit ``cost_center``.
+  # Informational only: existing/imported invoices keep their own cost center;
+  # empty (the default) means no cost center is assigned.
+  defaultCostCenter: ""
 
 auth:
   enabled: false

@@ -34,7 +34,19 @@ def _entity(value: Optional[str], default: str) -> str:
     return text or default or "default"
 
 
-def invoice_from_dict(data: dict, default_entity: str = "default") -> Invoice:
+def _cost_center(value: Optional[str], default: str) -> str:
+    """Return the invoice cost center, falling back to ``default``.
+
+    Unlike :func:`_entity` there is no non-empty database default: an absent or
+    blank value becomes the configured default (usually ``""``).
+    """
+    text = (value or "").strip()
+    return text or (default or "").strip()
+
+
+def invoice_from_dict(
+    data: dict, default_entity: str = "default", default_cost_center: str = ""
+) -> Invoice:
     items = []
     for idx, raw in enumerate(data.get("items", []), start=1):
         items.append(
@@ -51,6 +63,7 @@ def invoice_from_dict(data: dict, default_entity: str = "default") -> Invoice:
         invoice_date=parse_date(data.get("invoice_date")),
         po_number=(str(data["po_number"]).strip() if data.get("po_number") else None),
         entity=_entity(data.get("entity"), default_entity),
+        cost_center=_cost_center(data.get("cost_center"), default_cost_center),
         items=items,
     )
 
@@ -121,13 +134,15 @@ def reference_price_from_dict(data: dict) -> ReferencePrice:
     )
 
 
-def invoices_from_csv(text: str, default_entity: str = "default") -> List[Invoice]:
+def invoices_from_csv(
+    text: str, default_entity: str = "default", default_cost_center: str = ""
+) -> List[Invoice]:
     """Parse long-format invoice CSV (one row per line item).
 
-    The ``entity`` (Gesellschaft) column is optional; missing values fall back
-    to ``default_entity``. Rows are grouped by
-    ``(number, supplier, date, po, entity)`` so the same invoice number in two
-    societies stays two invoices.
+    The ``entity`` (Gesellschaft) and ``cost_center`` columns are optional;
+    missing values fall back to ``default_entity`` / ``default_cost_center``.
+    Rows are grouped by ``(number, supplier, date, po, entity, cost_center)`` so
+    the same invoice number in two societies or cost centers stays two invoices.
     """
     reader = csv.DictReader(io.StringIO(text))
     grouped: Dict[tuple, Invoice] = {}
@@ -138,7 +153,8 @@ def invoices_from_csv(text: str, default_entity: str = "default") -> List[Invoic
         invoice_date = (row.get("invoice_date") or "").strip()
         po_number = (row.get("po_number") or "").strip() or None
         entity = _entity(row.get("entity"), default_entity)
-        key = (number, supplier, invoice_date, po_number, entity)
+        cost_center = _cost_center(row.get("cost_center"), default_cost_center)
+        key = (number, supplier, invoice_date, po_number, entity, cost_center)
         if key not in grouped:
             grouped[key] = Invoice(
                 invoice_number=number,
@@ -146,6 +162,7 @@ def invoices_from_csv(text: str, default_entity: str = "default") -> List[Invoic
                 invoice_date=parse_date(invoice_date),
                 po_number=po_number,
                 entity=entity,
+                cost_center=cost_center,
             )
             order.append(key)
         position = row.get("position")

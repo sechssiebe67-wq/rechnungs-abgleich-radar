@@ -72,6 +72,9 @@ class Settings:
     review_hourly_rate_eur: float = 45.0
     # Society assigned to new invoices that carry no explicit ``entity``.
     default_entity: str = "default"
+    # Cost center assigned to new invoices that carry no explicit
+    # ``cost_center``. Empty means "no cost center".
+    default_cost_center: str = ""
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -102,6 +105,9 @@ class Settings:
                 os.environ.get("RADAR_DEFAULT_ENTITY", "default") or ""
             ).strip()
             or "default",
+            default_cost_center=(
+                os.environ.get("RADAR_DEFAULT_COST_CENTER", "") or ""
+            ).strip(),
         )
 
 
