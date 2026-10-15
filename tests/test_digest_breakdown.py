@@ -16,6 +16,7 @@ from test_api import ApiTestCase  # noqa: E402
 
 ENTITY_FIELDS = {"entity", "findings", "open_amount"}
 COST_CENTER_FIELDS = {"cost_center", "findings", "open_amount"}
+SUPPLIER_FIELDS = {"supplier", "findings", "open_amount"}
 LEGACY_KEYS = {
     "generated_at",
     "period_days",
@@ -26,7 +27,7 @@ LEGACY_KEYS = {
     "stats",
     "findings",
 }
-BREAKDOWN_KEYS = {"by_entity", "by_cost_center"}
+BREAKDOWN_KEYS = {"by_entity", "by_cost_center", "by_supplier"}
 
 
 class DigestBreakdownStoreTests(unittest.TestCase):
@@ -36,12 +37,12 @@ class DigestBreakdownStoreTests(unittest.TestCase):
         self.store.init()
         self._seq = 0
 
-    def _finding(self, *, entity="default", cost_center="", amount=10.0):
+    def _finding(self, *, entity="default", cost_center="", amount=10.0, supplier="ACME GmbH"):
         self._seq += 1
         invoice_id = self.store.add_invoice(
             Invoice(
                 invoice_number="RE-%d" % self._seq,
-                supplier="ACME GmbH",
+                supplier=supplier,
                 invoice_date=None,
                 entity=entity,
                 cost_center=cost_center,
@@ -90,6 +91,20 @@ class DigestBreakdownStoreTests(unittest.TestCase):
             {"cost_center": "KST-200", "findings": 1, "open_amount": 20.0},
         )
 
+    def test_supplier_breakdown_groups_and_sorts(self):
+        self._finding(entity="DE01", amount=10.0, supplier="Zeta GmbH")
+        self._finding(entity="DE01", amount=20.0, supplier="Alpha GmbH")
+        self._finding(entity="DE02", amount=30.0, supplier="Alpha GmbH")
+        digest = weekly_digest(self.store)
+        self.assertEqual(set(digest["by_supplier"][0].keys()), SUPPLIER_FIELDS)
+        self.assertEqual(
+            digest["by_supplier"],
+            [
+                {"supplier": "Alpha GmbH", "findings": 2, "open_amount": 50.0},
+                {"supplier": "Zeta GmbH", "findings": 1, "open_amount": 10.0},
+            ],
+        )
+
     def test_sum_invariant_holds(self):
         self._seed()
         digest = weekly_digest(self.store)
@@ -102,11 +117,19 @@ class DigestBreakdownStoreTests(unittest.TestCase):
             digest["total_amount"],
         )
         self.assertEqual(
+            round(sum(row["open_amount"] for row in digest["by_supplier"]), 2),
+            digest["total_amount"],
+        )
+        self.assertEqual(
             sum(row["findings"] for row in digest["by_entity"]),
             digest["finding_count"],
         )
         self.assertEqual(
             sum(row["findings"] for row in digest["by_cost_center"]),
+            digest["finding_count"],
+        )
+        self.assertEqual(
+            sum(row["findings"] for row in digest["by_supplier"]),
             digest["finding_count"],
         )
 
@@ -119,6 +142,10 @@ class DigestBreakdownStoreTests(unittest.TestCase):
         self.assertEqual(
             [row["cost_center"] for row in digest["by_cost_center"]],
             ["KST-200", "KST-100"],
+        )
+        self.assertEqual(
+            digest["by_supplier"],
+            [{"supplier": "ACME GmbH", "findings": 2, "open_amount": 30.0}],
         )
 
     def test_cost_center_filter_scopes_breakdown(self):
@@ -143,6 +170,10 @@ class DigestBreakdownStoreTests(unittest.TestCase):
             digest["by_cost_center"],
             [{"cost_center": "KST-100", "findings": 1, "open_amount": 10.0}],
         )
+        self.assertEqual(
+            digest["by_supplier"],
+            [{"supplier": "ACME GmbH", "findings": 1, "open_amount": 10.0}],
+        )
 
     def test_unknown_filter_yields_empty_blocks(self):
         self._seed()
@@ -152,6 +183,7 @@ class DigestBreakdownStoreTests(unittest.TestCase):
         self.assertEqual(digest["finding_count"], 0)
         self.assertEqual(digest["by_entity"], [])
         self.assertEqual(digest["by_cost_center"], [])
+        self.assertEqual(digest["by_supplier"], [])
 
     def test_tie_break_is_ascending_by_group_key(self):
         self._finding(entity="BB", amount=10.0)
@@ -163,12 +195,30 @@ class DigestBreakdownStoreTests(unittest.TestCase):
             [("AA", 20.0), ("CC", 20.0), ("BB", 10.0)],
         )
 
+    def test_supplier_tie_break_is_ascending(self):
+        self._finding(supplier="Zeta GmbH", amount=20.0)
+        self._finding(supplier="Alpha GmbH", amount=20.0)
+        self._finding(supplier="Beta GmbH", amount=5.0)
+        digest = weekly_digest(self.store)
+        self.assertEqual(
+            [(r["supplier"], r["open_amount"]) for r in digest["by_supplier"]],
+            [("Alpha GmbH", 20.0), ("Zeta GmbH", 20.0), ("Beta GmbH", 5.0)],
+        )
+
     def test_empty_cost_center_reported_as_empty_string(self):
         self._finding(entity="DE01", cost_center="", amount=5.0)
         digest = weekly_digest(self.store, entities=["DE01"])
         self.assertEqual(
             digest["by_cost_center"],
             [{"cost_center": "", "findings": 1, "open_amount": 5.0}],
+        )
+
+    def test_empty_supplier_reported_as_empty_string(self):
+        self._finding(entity="DE01", amount=5.0, supplier="")
+        digest = weekly_digest(self.store, entities=["DE01"])
+        self.assertEqual(
+            digest["by_supplier"],
+            [{"supplier": "", "findings": 1, "open_amount": 5.0}],
         )
 
     def test_limit_is_respected_by_breakdown(self):
@@ -181,6 +231,10 @@ class DigestBreakdownStoreTests(unittest.TestCase):
         self.assertEqual(
             [row["entity"] for row in digest["by_entity"]], ["E1", "E2"]
         )
+        self.assertEqual(
+            round(sum(row["open_amount"] for row in digest["by_supplier"]), 2),
+            digest["total_amount"],
+        )
 
 
 class DigestBreakdownHtmlTests(unittest.TestCase):
@@ -190,12 +244,12 @@ class DigestBreakdownHtmlTests(unittest.TestCase):
         self.store.init()
         self._seq = 0
 
-    def _finding(self, *, entity="default", cost_center="", amount=10.0):
+    def _finding(self, *, entity="default", cost_center="", amount=10.0, supplier="ACME GmbH"):
         self._seq += 1
         invoice_id = self.store.add_invoice(
             Invoice(
                 invoice_number="RE-%d" % self._seq,
-                supplier="ACME GmbH",
+                supplier=supplier,
                 invoice_date=None,
                 entity=entity,
                 cost_center=cost_center,
@@ -218,13 +272,15 @@ class DigestBreakdownHtmlTests(unittest.TestCase):
         )
 
     def test_html_renders_both_tables_with_numbers(self):
-        self._finding(entity="DE01", cost_center="KST-100", amount=10.0)
-        self._finding(entity="DE02", cost_center="KST-200", amount=30.0)
+        self._finding(entity="DE01", cost_center="KST-100", amount=10.0, supplier="ACME GmbH")
+        self._finding(entity="DE02", cost_center="KST-200", amount=30.0, supplier="Zeta GmbH")
         html_body = render_html(weekly_digest(self.store))
         self.assertIn("<h3>Gesellschaften</h3>", html_body)
         self.assertIn("<h3>Kostenstellen</h3>", html_body)
+        self.assertIn("<h3>Lieferanten</h3>", html_body)
         self.assertIn("<td>DE02</td>", html_body)
         self.assertIn("<td>KST-100</td>", html_body)
+        self.assertIn("<td>Zeta GmbH</td>", html_body)
         self.assertIn("30.00 EUR", html_body)
         self.assertIn("40.00 EUR", html_body)
 
@@ -234,6 +290,7 @@ class DigestBreakdownHtmlTests(unittest.TestCase):
         html_body = render_html(empty)
         self.assertNotIn("<h3>Gesellschaften</h3>", html_body)
         self.assertNotIn("<h3>Kostenstellen</h3>", html_body)
+        self.assertNotIn("<h3>Lieferanten</h3>", html_body)
 
 
 class WebhookBreakdownPayloadTests(unittest.TestCase):
@@ -250,6 +307,9 @@ class WebhookBreakdownPayloadTests(unittest.TestCase):
             "by_cost_center": [
                 {"cost_center": "KST-100", "findings": 3, "open_amount": 60.0}
             ],
+            "by_supplier": [
+                {"supplier": "ACME GmbH", "findings": 3, "open_amount": 60.0}
+            ],
             "findings": [],
         }
 
@@ -261,11 +321,13 @@ class WebhookBreakdownPayloadTests(unittest.TestCase):
         self.assertEqual(payload["cost_centers"], ["KST-100"])
         self.assertEqual(payload["by_entity"], self._digest()["by_entity"])
         self.assertEqual(payload["by_cost_center"], self._digest()["by_cost_center"])
+        self.assertEqual(payload["by_supplier"], self._digest()["by_supplier"])
 
     def test_payload_defaults_breakdown_to_empty_lists(self):
         payload = _webhook_payload({"total_amount": 0.0, "finding_count": 0})
         self.assertEqual(payload["by_entity"], [])
         self.assertEqual(payload["by_cost_center"], [])
+        self.assertEqual(payload["by_supplier"], [])
 
 
 class DigestBreakdownApiTests(ApiTestCase):
@@ -324,11 +386,23 @@ class DigestBreakdownApiTests(ApiTestCase):
             [("KST-100", 40.0), ("KST-200", 20.0)],
         )
         self.assertEqual(
+            payload["by_supplier"],
+            [{"supplier": "ACME GmbH", "findings": 3, "open_amount": 60.0}],
+        )
+        self.assertEqual(
             round(sum(r["open_amount"] for r in payload["by_entity"]), 2),
             payload["total_amount"],
         )
         self.assertEqual(
             sum(r["findings"] for r in payload["by_entity"]),
+            payload["finding_count"],
+        )
+        self.assertEqual(
+            round(sum(r["open_amount"] for r in payload["by_supplier"]), 2),
+            payload["total_amount"],
+        )
+        self.assertEqual(
+            sum(r["findings"] for r in payload["by_supplier"]),
             payload["finding_count"],
         )
 
@@ -347,6 +421,10 @@ class DigestBreakdownApiTests(ApiTestCase):
             payload["by_cost_center"],
             [{"cost_center": "KST-200", "findings": 1, "open_amount": 20.0}],
         )
+        self.assertEqual(
+            payload["by_supplier"],
+            [{"supplier": "ACME GmbH", "findings": 1, "open_amount": 20.0}],
+        )
 
     def test_digest_json_unknown_filter_empty_blocks(self):
         self._seed()
@@ -356,6 +434,7 @@ class DigestBreakdownApiTests(ApiTestCase):
         self.assertEqual(payload["total_amount"], 0.0)
         self.assertEqual(payload["by_entity"], [])
         self.assertEqual(payload["by_cost_center"], [])
+        self.assertEqual(payload["by_supplier"], [])
 
     def test_digest_html_renders_breakdown_tables(self):
         self._seed()
@@ -363,7 +442,9 @@ class DigestBreakdownApiTests(ApiTestCase):
         self.assertEqual(status, 200)
         self.assertIn("<h3>Gesellschaften</h3>", raw)
         self.assertIn("<h3>Kostenstellen</h3>", raw)
+        self.assertIn("<h3>Lieferanten</h3>", raw)
         self.assertIn("<td>KST-200</td>", raw)
+        self.assertIn("<td>ACME GmbH</td>", raw)
 
     def test_digest_html_omits_empty_block_tables(self):
         self._seed()
@@ -371,6 +452,7 @@ class DigestBreakdownApiTests(ApiTestCase):
         self.assertEqual(status, 200)
         self.assertNotIn("<h3>Gesellschaften</h3>", raw)
         self.assertNotIn("<h3>Kostenstellen</h3>", raw)
+        self.assertNotIn("<h3>Lieferanten</h3>", raw)
 
 
 class DigestBreakdownSendApiTests(ApiTestCase):
@@ -406,8 +488,11 @@ class DigestBreakdownSendApiTests(ApiTestCase):
         hook = self.stub.server.received[0]
         self.assertIn("by_entity", hook)
         self.assertIn("by_cost_center", hook)
+        self.assertIn("by_supplier", hook)
         self.assertEqual(hook["by_entity"][0]["entity"], "DE01")
         self.assertEqual(hook["by_cost_center"][0]["cost_center"], "KST-100")
+        self.assertEqual(hook["by_supplier"][0]["supplier"], "ACME GmbH")
+        self.assertEqual(hook["by_supplier"][0]["open_amount"], 90.0)
         self.assertEqual(hook["finding_count"], 1)
 
 

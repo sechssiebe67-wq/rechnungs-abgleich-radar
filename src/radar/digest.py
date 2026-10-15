@@ -30,11 +30,13 @@ def weekly_digest(
     reported under ``cost_centers`` (sorted, deduplicated).
 
     In addition to the flat ``total_amount``/``finding_count`` the response
-    carries ``by_entity`` and ``by_cost_center``: one row per society resp. cost
-    center with the number of findings and the summed open amount, computed over
-    exactly the findings included here (same filters, same ``limit``). Both lists
-    are sorted by ``open_amount`` descending, then by the group key ascending, so
-    ``sum(open_amount) == total_amount`` and ``sum(findings) == finding_count``.
+    carries ``by_entity``, ``by_cost_center`` and ``by_supplier``: one row per
+    society resp. cost center resp. supplier with the number of findings and the
+    summed open amount, computed over exactly the findings included here (same
+    filters, same ``limit``). All lists are sorted by ``open_amount`` descending,
+    then by the group key ascending, so ``sum(open_amount) == total_amount`` and
+    ``sum(findings) == finding_count``. The supplier key is the invoice's
+    ``supplier``; empty values stay ``""`` and the group is kept.
     """
     findings = store.list_findings(
         status="open", entities=entities, cost_centers=cost_centers
@@ -58,6 +60,7 @@ def weekly_digest(
         "cost_centers": considered_cost_centers,
         "by_entity": _breakdown(findings, "entity"),
         "by_cost_center": _breakdown(findings, "cost_center"),
+        "by_supplier": _breakdown(findings, "supplier"),
         "stats": store.stats(),
         "findings": [_decorate(f) for f in findings],
     }
@@ -68,10 +71,10 @@ def _breakdown(findings: List[dict], key_name: str) -> List[dict]:
 
     Returns one row per group with ``findings`` and ``open_amount``, sorted by
     ``open_amount`` descending and then by the group key ascending (deterministic
-    for ties). The empty cost center is reported as ``""``; a missing entity
-    falls back to ``default``, mirroring the ``/api/stats`` semantics. Because
-    every finding belongs to exactly one group, the sums over the rows equal
-    ``finding_count`` and ``total_amount`` of the digest.
+    for ties). The empty cost center and supplier are reported as ``""``; a
+    missing entity falls back to ``default``, mirroring the ``/api/stats``
+    semantics. Because every finding belongs to exactly one group, the sums over
+    the rows equal ``finding_count`` and ``total_amount`` of the digest.
     """
     default_key = "default" if key_name == "entity" else ""
     groups: dict = {}
@@ -102,11 +105,12 @@ def _decorate(finding: dict) -> dict:
 
 
 def _breakdown_html(digest: dict) -> str:
-    """Render the society/cost-center breakdown tables (omit empty blocks)."""
+    """Render the society/cost-center/supplier breakdown tables (omit empty blocks)."""
     blocks: List[str] = []
     for title, field, key_name, label in (
         ("Gesellschaften", "by_entity", "entity", "Gesellschaft"),
         ("Kostenstellen", "by_cost_center", "cost_center", "Kostenstelle"),
+        ("Lieferanten", "by_supplier", "supplier", "Lieferant"),
     ):
         rows = digest.get(field) or []
         if not rows:

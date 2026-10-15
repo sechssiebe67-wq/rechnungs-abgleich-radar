@@ -712,9 +712,10 @@ class Store:
     ) -> List[dict]:
         """List findings, optionally filtered, sorted and paged.
 
-        Every row carries the owning invoice's ``entity`` and ``cost_center`` so
-        callers (e.g. the digest) can show the society and cost center per
-        finding and build per-group breakdowns. ``entities=None`` applies no
+        Every row carries the owning invoice's ``entity``, ``cost_center`` and
+        ``supplier`` so callers (e.g. the digest) can show the society, cost
+        center and supplier per finding and build per-group breakdowns.
+        ``entities=None`` applies no
         entity filter and stays identical to the previous behaviour.
         ``cost_centers`` filters on the owning invoice's cost center and is
         AND-combined with ``entities`` (an unknown value yields an empty list,
@@ -735,7 +736,8 @@ class Store:
             raise ValueError("offset must be >= 0")
 
         query = (
-            "SELECT f.*, i.entity AS entity, i.cost_center AS cost_center "
+            "SELECT f.*, i.entity AS entity, i.cost_center AS cost_center, "
+            "i.supplier AS supplier "
             "FROM findings f "
             "LEFT JOIN invoices i ON i.id = f.invoice_id"
         )

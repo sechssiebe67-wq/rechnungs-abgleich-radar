@@ -83,7 +83,7 @@ python3 -m unittest discover -s tests -v
 | `POST /api/reconcile` | Alle Rechnungen (oder `{"invoice_id": …}`) neu abgleichen |
 | `GET /api/findings?status=open&min_amount=&entity=` | Priorisierte Auffälligkeiten; optional seitenweise (`?limit=`, `?offset=`) und sortiert (`?sort=`) |
 | `POST /api/findings/:id/feedback` | `{"verdict": "confirmed"|"false_alarm"}` |
-| `GET /api/digest/weekly[.html]?entity=&cost_center=` | Wöchentlicher Digest als JSON/HTML inkl. Aufschlüsselung `by_entity`/`by_cost_center`, optional auf Gesellschaften und Kostenstellen gefiltert (UND-verknüpft) |
+| `GET /api/digest/weekly[.html]?entity=&cost_center=` | Wöchentlicher Digest als JSON/HTML inkl. Aufschlüsselung `by_entity`/`by_cost_center`/`by_supplier`, optional auf Gesellschaften und Kostenstellen gefiltert (UND-verknüpft) |
 | `POST /api/digest/weekly/send` | Digest aktiv per Webhook/SMTP zustellen (`{"entities": ["DE01"], "cost_centers": ["KST-100"]}`); Webhook-Payload enthält die Aufschlüsselung, liefert je Kanal `sent`/`skipped`/`error` |
 
 ### Kennzahlen je Gesellschaft und Kostenstelle
@@ -649,7 +649,7 @@ Der Wochen-Digest ist als JSON/HTML abrufbar und kann zusätzlich **aktiv
 zugestellt** werden — per Webhook (Slack-/Mattermost-kompatibles JSON mit
 Gesamtbetrag, Anzahl Findings, berücksichtigten Gesellschaften `entities`,
 berücksichtigten Kostenstellen `cost_centers`, der Aufschlüsselung
-`by_entity`/`by_cost_center` und Top-5-Auffälligkeiten) und/oder per SMTP als
+`by_entity`/`by_cost_center`/`by_supplier` und Top-5-Auffälligkeiten) und/oder per SMTP als
 HTML-E-Mail. Beide Kanäle sind unabhängig: Fällt einer
 aus (`error`), wird der andere trotzdem versucht; ein nicht konfigurierter
 Kanal meldet `skipped`. Über `?entity=` und `?cost_center=` (Abruf) bzw.
@@ -702,43 +702,45 @@ beide Kanäle als `skipped`. Optional startet `RADAR_DIGEST_SCHEDULE=weekly`
 zustellt; leer bedeutet aus, und der Thread wird beim Herunterfahren sauber
 beendet.
 
-### Aufschlüsselung nach Gesellschaft und Kostenstelle
+### Aufschlüsselung nach Gesellschaft, Kostenstelle und Lieferant
 
-Der Digest beantwortet direkt die Controller-Frage *„Welche Gesellschaft bzw.
-Kostenstelle treibt das offene Abweichungsvolumen der Woche?“*, ohne dass die
-Weboberfläche oder `/api/stats` geöffnet werden müssen. Dazu liefern
-`GET /api/digest/weekly`, `GET /api/digest/weekly.html` und der Webhook-Payload
-von `POST /api/digest/weekly/send` zwei zusätzliche Blöcke — mit denselben
-Semantiken wie die Blöcke `entities`/`cost_centers` aus `/api/stats`:
+Der Digest beantwortet direkt die Controller-Frage *„Welche Gesellschaft,
+Kostenstelle oder welcher Lieferant treibt das offene Abweichungsvolumen der
+Woche?“*, ohne dass die Weboberfläche oder `/api/stats` geöffnet werden müssen.
+Dazu liefern `GET /api/digest/weekly`, `GET /api/digest/weekly.html` und der
+Webhook-Payload von `POST /api/digest/weekly/send` drei zusätzliche Blöcke — mit
+denselben Semantiken wie die Blöcke `entities`/`cost_centers` aus `/api/stats`:
 
 | Block | Gruppenschlüssel | Felder |
 | --- | --- | --- |
 | `by_entity` | `entity` | `entity`, `findings`, `open_amount` |
 | `by_cost_center` | `cost_center` (leer als `""`) | `cost_center`, `findings`, `open_amount` |
+| `by_supplier` | `supplier` (leer als `""`) | `supplier`, `findings`, `open_amount` |
 
 - `open_amount` ist die Summe der Beträge der Findings der Gruppe, `findings`
-  deren Anzahl.
-- Beide Listen sind **absteigend nach `open_amount`**, bei Gleichstand
+  deren Anzahl. Der Lieferantenschlüssel ist `invoices.supplier` des jeweiligen
+  Findings; leere Werte bleiben `""`, die Gruppe wird nicht verworfen.
+- Alle Listen sind **absteigend nach `open_amount`**, bei Gleichstand
   **aufsteigend nach dem Gruppenschlüssel** sortiert.
 - Die Blöcke werden über **genau die Findings** gebildet, die der Digest ohnehin
   enthält — gleicher `?entity=`/`?cost_center=`-Filter, gleiches internes
   `limit`. Daher gilt invariant
   `sum(open_amount) == total_amount` und
-  `sum(findings) == finding_count` über beide Blöcke (auf zwei Nachkommastellen
-  gerundet).
+  `sum(findings) == finding_count` über alle drei Blöcke (auf zwei
+  Nachkommastellen gerundet).
 - Die Filter bleiben **UND-verknüpft**: Eine Zeile erscheint nur für Rechnungen,
   die zu *allen* gewählten Gesellschaften und Kostenstellen passen. Ein
   unbekannter Filterwert liefert `200` mit leeren Blöcken und
   `total_amount == 0.0`.
 - Die bestehenden Schlüssel (`generated_at`, `period_days`, `total_amount`,
   `finding_count`, `entities`, `cost_centers`, `stats`, `findings`) behalten
-  Name, Typ und Bedeutung. Der HTML-Digest zeigt unter der Zusammenfassung zwei
-  kleine Tabellen („Gesellschaften“, „Kostenstellen“); ein leerer Block rendert
-  **keine** Tabelle. Es kommen keine neuen Tabellen, Endpunkte oder
+  Name, Typ und Bedeutung. Der HTML-Digest zeigt unter der Zusammenfassung drei
+  kleine Tabellen („Gesellschaften“, „Kostenstellen“, „Lieferanten“); ein leerer
+  Block rendert **keine** Tabelle. Es kommen keine neuen Tabellen, Endpunkte oder
   Laufzeit-Abhängigkeiten hinzu.
 
 ```sh
-# Wöchentlicher Digest inkl. by_entity/by_cost_center
+# Wöchentlicher Digest inkl. by_entity/by_cost_center/by_supplier
 curl -sS http://localhost:8080/api/digest/weekly
 
 # UND-verknüpft: nur Rechnungen von DE01 mit Kostenstelle KST-100
@@ -758,6 +760,10 @@ curl -sS 'http://localhost:8080/api/digest/weekly?entity=DE01&cost_center=KST-10
   "by_cost_center": [
     {"cost_center": "KST-100", "findings": 2, "open_amount": 40.0},
     {"cost_center": "KST-200", "findings": 1, "open_amount": 20.0}
+  ],
+  "by_supplier": [
+    {"supplier": "ACME GmbH", "findings": 2, "open_amount": 40.0},
+    {"supplier": "Zeta GmbH", "findings": 1, "open_amount": 20.0}
   ]
 }
 ```
