@@ -1,0 +1,6 @@
+apiVersion: v2
+name: rechnungs-abgleich-radar
+description: Prüft Eingangsrechnungen gegen Bestellungen, Verträge und zuletzt akzeptierte Preise und priorisiert Auffälligkeiten.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

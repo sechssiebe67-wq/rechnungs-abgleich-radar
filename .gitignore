@@ -8,5 +8,8 @@ dist/
 venv/
 .pytest_cache/
 .coverage
+*.db
+*.sqlite3
+/data/
 
 .idea/

@@ -1,0 +1,273 @@
+"""Reconciliation engine: compares invoice lines against orders and prices."""
+
+from __future__ import annotations
+
+from typing import List, Optional
+
+from .config import Settings
+from .db import Store
+from .models import (
+    Finding,
+    PurchaseOrderItem,
+    ReferencePrice,
+    normalize_document_number,
+    normalize_text,
+    parse_date,
+)
+
+
+def _over(actual: float, reference: float, tolerance_pct: float) -> bool:
+    """True when ``actual`` exceeds ``reference`` beyond the tolerance."""
+    if reference <= 0:
+        return actual > 0
+    allowed = reference * (1.0 + tolerance_pct / 100.0)
+    return actual > allowed + 1e-9
+
+
+def reconcile_invoice(store: Store, invoice_id: int, settings: Settings) -> List[int]:
+    """Reconcile a single invoice and persist its findings.
+
+    Existing findings for the invoice are replaced. Returns the list of new
+    finding ids ordered by insertion.
+    """
+    invoice = store.get_invoice(invoice_id)
+    if invoice is None:
+        raise ValueError("unknown invoice: %s" % invoice_id)
+
+    store.clear_findings(invoice_id)
+    finding_ids: List[int] = []
+
+    po = store.get_purchase_order(invoice.po_number) if invoice.po_number else None
+
+    if po is None:
+        finding_ids.append(
+            store.add_finding(
+                Finding(
+                    finding_type="missing_po",
+                    amount=invoice.total_amount,
+                    message=(
+                        "Keine Bestellung zu Rechnung %s gefunden; Betrag vor Freigabe prüfen."
+                        % invoice.invoice_number
+                    ),
+                    invoice_id=invoice_id,
+                    reference_kind="bestellung",
+                    reference_value=invoice.po_number or "",
+                    actual_value=invoice.invoice_number,
+                )
+            )
+        )
+
+    po_items = {}
+    if po is not None:
+        for item in po.items:
+            po_items[normalize_text(item.article)] = item
+
+    for row in store.invoice_items(invoice_id):
+        finding_ids.extend(
+            _reconcile_item(store, invoice, row, po_items, settings)
+        )
+
+    finding_ids.extend(_detect_duplicates(store, invoice, settings))
+    store.mark_reconciled(invoice_id)
+    return finding_ids
+
+
+def _reconcile_item(store, invoice, row, po_items, settings) -> List[int]:
+    ids: List[int] = []
+    article_norm = row["article_norm"]
+    quantity = float(row["quantity"])
+    unit_price = float(row["unit_price"])
+    po_item: Optional[PurchaseOrderItem] = po_items.get(article_norm)
+    ref: Optional[ReferencePrice] = store.latest_reference_price(
+        invoice.supplier, row["article"], invoice.invoice_date
+    )
+
+    if po_item is not None:
+        reference_label = "Bestellpreis"
+        reference_unit = float(po_item.unit_price)
+        reference_kind = "bestellung"
+        reference_value = invoice.po_number or ""
+        drift = False
+    elif ref is not None:
+        reference_label = "Vertragspreis" if ref.source == "contract" else "zuletzt akzeptierter Preis"
+        reference_unit = float(ref.unit_price)
+        reference_kind = ref.source
+        reference_value = ref.valid_from.isoformat() if ref.valid_from else ""
+        drift = ref.source != "contract"
+    else:
+        po_item = None
+        reference_unit = None
+
+    if reference_unit is not None:
+        threshold = settings.price_drift_pct if drift else settings.tolerance_pct
+        if _over(unit_price, reference_unit, threshold):
+            amount = (unit_price - reference_unit) * quantity
+            if amount > 0.005:
+                finding_type = "price_drift" if drift else "price_deviation"
+                ids.append(
+                    store.add_finding(
+                        Finding(
+                            finding_type=finding_type,
+                            amount=round(amount, 2),
+                            message=(
+                                "%s: berechnet %.2f EUR statt %s %.2f EUR (+%.1f%%)."
+                                % (
+                                    row["article"],
+                                    unit_price,
+                                    reference_label,
+                                    reference_unit,
+                                    (unit_price - reference_unit) / reference_unit * 100.0,
+                                )
+                            ),
+                            invoice_id=invoice.invoice_id,
+                            invoice_item_id=row["id"],
+                            reference_kind=reference_kind,
+                            reference_value=str(reference_value),
+                            actual_value="%.2f" % unit_price,
+                        )
+                    )
+                )
+
+    if po_item is not None and quantity > float(po_item.quantity) + 1e-9:
+        excess = quantity - float(po_item.quantity)
+        amount = excess * unit_price
+        if amount > 0.005:
+            ids.append(
+                store.add_finding(
+                    Finding(
+                        finding_type="quantity_deviation",
+                        amount=round(amount, 2),
+                        message=(
+                            "%s: %.2f berechnet, bestellt %.2f (+%.2f)."
+                            % (row["article"], quantity, po_item.quantity, excess)
+                        ),
+                        invoice_id=invoice.invoice_id,
+                        invoice_item_id=row["id"],
+                        reference_kind="menge",
+                        reference_value="%.2f" % float(po_item.quantity),
+                        actual_value="%.2f" % quantity,
+                    )
+                )
+            )
+
+    return ids
+
+
+def _detect_duplicates(store, invoice, settings) -> List[int]:
+    """Flag the *newer* invoice of a suspected duplicate pair."""
+    ids: List[int] = []
+    if invoice.invoice_id is None:
+        return ids
+    my_number = normalize_document_number(invoice.invoice_number)
+    my_total = round(invoice.total_amount, 2)
+    for other in store.invoices_for_supplier(invoice.supplier):
+        other_id = int(other["id"])
+        if other_id == invoice.invoice_id or other_id > invoice.invoice_id:
+            # Compare only against older invoices so each pair is flagged once.
+            continue
+        reason = None
+        other_number = other["invoice_norm"] or normalize_document_number(other["invoice_number"])
+        if my_number and other_number and my_number == other_number:
+            reason = "gleiche Rechnungsnummer (normalisiert): %s / %s" % (
+                invoice.invoice_number,
+                other["invoice_number"],
+            )
+        elif abs(float(other["total_amount"]) - my_total) < 0.01 and my_total > 0:
+            other_date = parse_date(other["invoice_date"])
+            my_date = invoice.invoice_date
+            if other_date and my_date:
+                delta = abs((my_date - other_date).days)
+                if delta <= settings.duplicate_window_days:
+                    reason = "gleicher Betrag %.2f EUR innerhalb von %d Tagen (%s)" % (
+                        my_total,
+                        delta,
+                        other["invoice_number"],
+                    )
+        if reason:
+            ids.append(
+                store.add_finding(
+                    Finding(
+                        finding_type="duplicate",
+                        amount=my_total,
+                        message="Duplikatverdacht gegen %s: %s." % (other["invoice_number"], reason),
+                        invoice_id=invoice.invoice_id,
+                        reference_kind="rechnung",
+                        reference_value=other["invoice_number"],
+                        actual_value=invoice.invoice_number,
+                    )
+                )
+            )
+            break
+    return ids
+
+
+def reconcile_all(store: Store, settings: Settings) -> dict:
+    """Reconcile every invoice; returns counts for reporting."""
+    total = 0
+    flagged = 0
+    for invoice in store.list_invoices():
+        ids = reconcile_invoice(store, int(invoice["id"]), settings)
+        total += 1
+        if ids:
+            flagged += 1
+    return {"invoices": total, "flagged": flagged}
+
+
+def invoice_audit(store: Store, invoice_id: int) -> Optional[dict]:
+    """Return a traceability view: what was compared and what deviated."""
+    invoice = store.get_invoice(invoice_id)
+    if invoice is None:
+        return None
+    findings = store.list_findings(invoice_id=invoice_id)
+    by_item: dict = {}
+    for finding in findings:
+        key = finding.get("invoice_item_id")
+        by_item.setdefault(key, []).append(finding)
+
+    items = []
+    po = store.get_purchase_order(invoice.po_number) if invoice.po_number else None
+    po_prices = {}
+    if po is not None:
+        for po_item in po.items:
+            po_prices[normalize_text(po_item.article)] = float(po_item.unit_price)
+    for row in store.invoice_items(invoice_id):
+        po_unit = po_prices.get(row["article_norm"])
+        reference = store.latest_reference_price(
+            invoice.supplier, row["article"], invoice.invoice_date
+        )
+        if po_unit is not None:
+            reference_price = po_unit
+            reference_source = "bestellung"
+        elif reference is not None:
+            reference_price = reference.unit_price
+            reference_source = reference.source
+        else:
+            reference_price = None
+            reference_source = None
+        items.append(
+            {
+                "position": row["position"],
+                "article": row["article"],
+                "quantity": row["quantity"],
+                "unit_price": row["unit_price"],
+                "line_total": round(row["quantity"] * row["unit_price"], 2),
+                "reference_price": reference_price,
+                "reference_source": reference_source,
+                "findings": by_item.get(row["id"], []),
+            }
+        )
+
+    return {
+        "invoice": {
+            "id": invoice.invoice_id,
+            "invoice_number": invoice.invoice_number,
+            "supplier": invoice.supplier,
+            "invoice_date": invoice.invoice_date.isoformat() if invoice.invoice_date else None,
+            "po_number": invoice.po_number,
+            "total_amount": round(invoice.total_amount, 2),
+        },
+        "items": items,
+        "findings": findings,
+        "unmatched_findings": by_item.get(None, []),
+    }
+

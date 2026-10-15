@@ -1,70 +1,87 @@
-# Product Criteria
+# Rechnungs-Abgleich-Radar — Concept
 
-## Hard Requirements (MUST)
+## Goal
 
-Every product must satisfy these requirements before the Salesman can approve its development.
+Kreditorenbuchhaltungen prüfen Eingangsrechnungen heute nur stichprobenartig.
+Das **Rechnungs-Abgleich-Radar** prüft jede Rechnung Position für Position gegen
+Bestellungen, Vertragspreise und den zuletzt akzeptierten Preis und liefert vor
+der Zahlungsfreigabe eine **priorisierte Liste nur der auffälligen Rechnungen** —
+mit Fundstelle, Abweichungsbetrag in Euro und Begründung.
 
-- **Web Deployable:** Must run as a web application and be accessible through a browser.
-- **Originality:** Must not be a direct copy of an existing product, whether internally developed or commercially available. Existing concepts may be combined or significantly improved to create something unique.
-- **Expandable:** Must have an architecture that allows additional features and future improvements.
-- **Real User Value:** Must solve a real problem, provide entertainment, improve productivity, or offer another clearly identifiable benefit.
-- **Clearly Defined Audience:** Must have at least one identifiable target audience.
-- **Standalone:** Must function independently without requiring another AI Product Factory application.
-- **Autonomous Operation:** Must operate without continuous human intervention after deployment.
-- **Kubernetes Compatible:** Must be containerized and deployable on the existing k3s cluster using Helm and Argo CD.
-- **Resource Efficient:** Must stay within defined CPU, RAM, and storage budgets.
-- **Security:** Must follow basic security practices, including dependency scanning, safe secret handling, and input validation.
-- **Testable:** Must support automated testing and have measurable acceptance criteria.
-- **Maintainable:** Must contain readable source code, clear project structure, and sufficient technical documentation.
-- **Legal Compliance:** Must respect software licences, copyright, privacy regulations, and applicable laws.
-- **Health Monitoring:** Must expose a reliable way to verify whether the deployment is healthy.
-- **Unique Product Identity:** Must have a unique repository name, product name, and subdomain.
+Zielbild: Prüfaufwand sinkt von Minuten pro Rechnung auf Sekunden pro Auffälligkeit.
 
-## Soft Requirements (SHOULD)
+## Intended users
 
-These requirements should influence the Salesman's evaluation and ranking.
+Finanz- und Kreditorenbuchhaltungs-Teams in KMU (5–50 Mitarbeitende) mit
+100–2.000 Eingangsrechnungen pro Monat, die heute manuell gegen Bestellungen,
+Verträge und Preislisten prüfen. Die Anwender laden Buchhaltungsexporte und
+Referenzdaten hoch, prüfen die markierten Auffälligkeiten und geben pro Treffer
+Feedback (bestätigt / Fehlalarm).
 
-- **Database Independence:** Should preferably work without a database. A database is allowed when persistent storage adds meaningful value.
-- **Monetization Potential:** Should have a realistic path to revenue, such as subscriptions, advertisements, one-time purchases, or paid features.
-- **Low Operating Costs:** Should require minimal infrastructure, external APIs, and paid services.
-- **Fast MVP Development:** Should ideally have a deployable minimum viable product within a limited development budget.
-- **Low Maintenance:** Should require minimal ongoing maintenance and manual administration.
-- **Market Differentiation:** Should offer a meaningful advantage over existing alternatives.
-- **Growth Potential:** Should be able to attract additional users without a proportional increase in operating costs.
-- **User Retention:** Should provide reasons for users to return regularly.
-- **Discoverability:** Should be understandable, searchable, and easy to share.
-- **Mobile Friendly:** Should work well on smartphones, tablets, and desktop browsers.
-- **Accessibility:** Should follow established accessibility principles.
-- **Minimal Dependencies:** Should avoid unnecessary external services and vendor lock-in.
-- **Measurable Success:** Should provide metrics that help evaluate adoption, reliability, and product value.
-- **Reusability:** Should preferably reuse existing components, design patterns, and deployment templates.
-- **Innovation Potential:** Should have opportunities for unique features or future experimentation.
+## Problem
 
-## Product Rejection Criteria
+Preisabweichungen, Mengenfehler, doppelt berechnete Positionen, fehlende
+Bestellreferenzen und still erhöhte Vertragspreise bleiben unbemerkt und werden
+bezahlt, weil die manuelle Prüfung pro Rechnung mehrere Minuten dauert und bei
+Volumen nicht durchhaltbar ist.
 
-The Salesman must reject a product idea if:
+## Current capabilities (implemented increment)
 
-- It is merely a clone without meaningful differentiation.
-- Its purpose or target audience cannot be explained clearly.
-- It cannot run within the available infrastructure budget.
-- It requires unavailable credentials, licences, hardware, or external services.
-- It introduces unacceptable security, legal, or privacy risks.
-- It has no realistic path to a working MVP.
-- It requires continuous manual operation.
-- It offers no meaningful advantage over an already active product.
-- Its projected value does not justify its development and operating costs.
+Das Repository enthält einen lauffähigen, eigenständigen Dienst auf Basis der
+Python-Standardbibliothek (keine externen Laufzeit-Abhängigkeiten) mit SQLite als
+persistentem Speicher.
 
-## Product Lifecycle Requirements
+- **Datenaufnahme**
+  - Lieferanten, Referenzpreise (Vertrag / zuletzt akzeptiert) und Bestellungen
+    (POs mit Positionen) per JSON-API.
+  - Eingangsrechnungen per JSON oder CSV-Import (Zeilen pro Position).
+- **Abgleich-Engine** (`radar/reconcile.py`)
+  - **Preisabweichung:** Rechnungspreis vs. Bestellpreis bzw. Referenzpreis,
+    außerhalb einer konfigurierbaren Toleranz.
+  - **Mengenabweichung:** höhere berechnete Menge als bestellt.
+  - **Fehlende Bestellreferenz:** Rechnung ohne zuordenbare Bestellnummer.
+  - **Duplikatverdacht:** normalisierte, leicht abweichende Rechnungsnummern
+    sowie gleicher Betrag/Lieferant innerhalb eines Zeitfensters.
+  - **Preisdrift:** schleichende Erhöhung über den zuletzt akzeptierten Preis
+    ohne vertragliche Deckung.
+- **Priorisierung** nach Abweichungsbetrag in Euro (absteigend).
+- **Nachvollziehbarkeit:** Audit-Ansicht pro Rechnung — was verglichen wurde und
+  was abwich (Referenzwert, Ist-Wert, Betrag, Begründung).
+- **Manuelles Feedback** pro Treffer (bestätigt / Fehlalarm) inkl. Precision-
+  Kennzahl als Grundlage für die Nachjustierung.
+- **Wöchentlicher Digest** als E-Mail-fähiger HTML-Report und als JSON.
+- **Betrieb:** `GET /healthz`, Dockerfile (linux/amd64 + linux/arm64), Helm-Chart
+  unter `deploy/helm/rechnungs-abgleich-radar/`, nicht-root Ausführung,
+  optionale persistente SQLite-Ablage.
 
-Every approved product must support:
+## Out of scope (bewusst außen vor)
 
-1. **Creation:** A dedicated GitHub repository is created.
-2. **Development:** The AI Developer implements the MVP.
-3. **Review:** Automated testing and AI code review validate the product.
-4. **Deployment:** Helm and GitOps configuration deploy the application.
-5. **Monitoring:** Operational health and product performance are evaluated.
-6. **Iteration:** The product can receive additional features and improvements.
-7. **Archival:** The repository is preserved while the deployment and Helm chart are removed.
-8. **Reactivation:** An archived product can be rebuilt and deployed again if its potential improves.
+Zahlungsausführung, Echtzeit-Buchhaltungsintegration und automatische
+Lieferantenkommunikation. Das Radar stoppt die Zahlung nicht selbst, sondern
+priorisiert die Freigabe-Entscheidung.
 
-The maximum number of simultaneously active product repositories is **10**.
+## Next direction
+
+1. OCR-/PDF-Extraktion statt strukturierter Exporte (Anbindung an Buchhaltung).
+2. Lieferanten- und artikelübergreifendes Fuzzy-Matching uneinheitlicher
+   Bezeichnungen mit Lernschleife aus dem Feedback.
+3. Regel-Editor pro Lieferant (Toleranzen, Drift-Schwellen, Freibeträge).
+4. Versand des Digests per SMTP/Webhook und Rollup über mehrere Gesellschaften.
+5. Auswertung vermiedener Beträge (ROI-Nachweis) für den Preistest.
+
+## Validation plan (Bezug zur Produkthypothese)
+
+Concierge-Test mit 3–5 Kreditorenbuchhaltungen, Precision/Recall der markierten
+Abweichungen gegen manuelle Nachprüfung, Abbruch bei weniger als 5 bestätigten
+Abweichungen pro 200 Rechnungen oder Precision unter 50 %. Die Feedback- und
+Digest-Funktionen dieses Inkrements liefern dafür die Messgrößen.
+
+## Delivery contract
+
+- Dockerfile, HTTP auf Port 8080, `GET /healthz`, linux/amd64 und linux/arm64.
+- Genau ein Helm-Chart unter `deploy/helm/<chart-name>/` mit
+  `image.repository` / `image.digest` (Rendering `repository@digest`),
+  Ingress über `ingress.enabled`, `ingress.host`, `ingress.className`,
+  Ressourcen-Requests/Limits, nicht-root Ausführung und persistenter Ablage.
+- `.github/workflows/factory-release.yml` bleibt erhalten und veröffentlicht das
+  Image-Manifest für reviewte Merges.

@@ -1,0 +1,3 @@
+supplier,article,unit_price,valid_from,source
+ACME GmbH,Schraube M8,0.40,2026-01-01,contract
+Beta AG,Stift 3mm,0.08,2026-01-01,contract
