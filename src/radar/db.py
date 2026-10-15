@@ -563,13 +563,20 @@ class Store:
         limit: Optional[int] = None,
         offset: Optional[int] = None,
         order_by: Optional[str] = None,
+        entities: Optional[List[str]] = None,
+        cost_centers: Optional[List[str]] = None,
     ) -> List[dict]:
-        """List invoices, optionally sorted and paged.
+        """List invoices, optionally filtered, sorted and paged.
 
         ``order_by`` must be one of :data:`INVOICE_ORDER_BY`; ``None`` keeps the
         documented default ordering (``created_at_desc``) and is fully backwards
         compatible. ``limit``/``offset`` are applied only when provided, so an
         unpaged call returns exactly the rows it always did.
+
+        ``entities`` and ``cost_centers`` restrict the result to invoices of the
+        chosen societies resp. cost centers and are AND-combined (an invoice must
+        match both when both are given). Unknown values are not an error and
+        simply yield an empty list; ``None``/empty applies no filter.
         """
         if order_by is None:
             order_by = DEFAULT_INVOICE_ORDER
@@ -579,6 +586,18 @@ class Store:
             raise ValueError("limit must be >= 0")
         if offset is not None and int(offset) < 0:
             raise ValueError("offset must be >= 0")
+
+        clauses: List[str] = []
+        params: List[object] = []
+        if entities:
+            placeholders = ", ".join("?" for _ in entities)
+            clauses.append("i.entity IN (%s)" % placeholders)
+            params.extend(entities)
+        if cost_centers:
+            placeholders = ", ".join("?" for _ in cost_centers)
+            clauses.append("i.cost_center IN (%s)" % placeholders)
+            params.extend(cost_centers)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
 
         query = (
             """SELECT i.*,
@@ -591,11 +610,11 @@ class Store:
                                         THEN f.amount ELSE 0 END), 0) AS open_amount
                FROM invoices i
                LEFT JOIN findings f ON f.invoice_id = i.id
+               %s
                GROUP BY i.id
-               ORDER BY """
+               ORDER BY """ % where
             + INVOICE_ORDER_BY[order_by]
         )
-        params: List[object] = []
         if limit is not None:
             query += " LIMIT ?"
             params.append(int(limit))
@@ -621,10 +640,34 @@ class Store:
             results.append(entry)
         return results
 
-    def count_invoices(self) -> int:
-        """Count all invoices, independent of any pagination window."""
+    def count_invoices(
+        self,
+        entities: Optional[List[str]] = None,
+        cost_centers: Optional[List[str]] = None,
+    ) -> int:
+        """Count invoices, independent of any pagination window.
+
+        Accepts the same optional ``entities``/``cost_centers`` filters as
+        :meth:`list_invoices` so callers can report ``total_count`` for a
+        filtered set.
+        """
+        clauses: List[str] = []
+        params: List[object] = []
+        if entities:
+            placeholders = ", ".join("?" for _ in entities)
+            clauses.append("i.entity IN (%s)" % placeholders)
+            params.extend(entities)
+        if cost_centers:
+            placeholders = ", ".join("?" for _ in cost_centers)
+            clauses.append("i.cost_center IN (%s)" % placeholders)
+            params.extend(cost_centers)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
         with self.connect() as conn:
-            return int(conn.execute("SELECT COUNT(*) AS c FROM invoices").fetchone()["c"])
+            return int(
+                conn.execute(
+                    "SELECT COUNT(*) AS c FROM invoices i" + where, params
+                ).fetchone()["c"]
+            )
 
     def list_entities(self) -> List[str]:
         """Return the distinct, sorted entities occurring in invoices."""
@@ -758,9 +801,10 @@ class Store:
     ) -> List[dict]:
         """List findings, optionally filtered, sorted and paged.
 
-        Every row carries the owning invoice's ``entity``, ``cost_center`` and
-        ``supplier`` so callers (e.g. the digest) can show the society, cost
-        center and supplier per finding and build per-group breakdowns.
+        Every row carries the owning invoice's ``entity``, ``cost_center``,
+        ``supplier`` and ``invoice_number`` so callers (e.g. the digest or the
+        CSV export) can show the society, cost center and supplier per finding
+        and build per-group breakdowns.
         ``entities=None`` applies no
         entity filter and stays identical to the previous behaviour.
         ``cost_centers`` filters on the owning invoice's cost center and is
@@ -788,7 +832,7 @@ class Store:
 
         query = (
             "SELECT f.*, i.entity AS entity, i.cost_center AS cost_center, "
-            "i.supplier AS supplier "
+            "i.supplier AS supplier, i.invoice_number AS invoice_number "
             "FROM findings f "
             "LEFT JOIN invoices i ON i.id = f.invoice_id"
         )

@@ -76,12 +76,14 @@ python3 -m unittest discover -s tests -v
 | `DELETE /api/supplier-rules/:supplier` | Regel löschen, `404` bei unbekanntem Lieferanten |
 | `POST /api/reference-prices` | Vertrags-/akzeptierten Preis anlegen (JSON, Liste oder `prices`) |
 | `POST /api/purchase-orders` | Bestellung mit Positionen anlegen |
-| `GET /api/invoices` | Liste aller Rechnungen inkl. Prüf-Last je Rechnung (`finding_count`, `open_finding_count`, `reviewed_finding_count`, `open_amount`, `review_status`); optional seitenweise (`?limit=`, `?offset=`) und sortiert (`?sort=`, u. a. `open_amount_desc`, `open_finding_count_desc`) |
+| `GET /api/invoices` | Liste aller Rechnungen inkl. Prüf-Last je Rechnung (`finding_count`, `open_finding_count`, `reviewed_finding_count`, `open_amount`, `review_status`); optional seitenweise (`?limit=`, `?offset=`), sortiert (`?sort=`, u. a. `open_amount_desc`, `open_finding_count_desc`) und nach Gesellschaft/Kostenstelle gefiltert (`?entity=`, `?cost_center=`) |
 | `POST /api/invoices` | Rechnung per JSON anlegen und sofort abgleichen |
 | `POST /api/invoices/import` | Rechnungen per CSV (ein Datensatz pro Position) importieren |
 | `GET /api/invoices/:id` | Nachvollziehbarkeit: was wurde verglichen, was wich ab; Findings je Artikel/Position als `items` + `items_total_amount` |
+| `GET /api/invoices/export` | Rechnungsliste als CSV-Download (`text/csv`), optional gefiltert (`?entity=`, `?cost_center=`) |
 | `POST /api/reconcile` | Alle Rechnungen (oder `{"invoice_id": …}`) neu abgleichen |
 | `GET /api/findings?status=open&min_amount=&entity=` | Priorisierte Auffälligkeiten; optional nach Rechnungs-Prüfstatus gefiltert (`?review_status=open\|reviewed\|all`), seitenweise (`?limit=`, `?offset=`) und sortiert (`?sort=`) |
+| `GET /api/findings/export` | Findings-Liste als CSV-Download (`text/csv`), optional gefiltert (`?status=`, `?min_amount=`, `?entity=`, `?review_status=`) |
 | `POST /api/findings/:id/feedback` | `{"verdict": "confirmed"|"false_alarm"}` |
 | `GET /api/digest/weekly[.html]?entity=&cost_center=` | Wöchentlicher Digest als JSON/HTML inkl. Aufschlüsselung `by_entity`/`by_cost_center`/`by_supplier`, optional auf Gesellschaften und Kostenstellen gefiltert (UND-verknüpft) |
 | `POST /api/digest/weekly/send` | Digest aktiv per Webhook/SMTP zustellen (`{"entities": ["DE01"], "cost_centers": ["KST-100"]}`); Webhook-Payload enthält die Aufschlüsselung, liefert je Kanal `sent`/`skipped`/`error` |
@@ -361,6 +363,47 @@ Finding-Typen) und einem „Audit“-Button je Rechnung. Die Tabelle listet alle
 verglichenen Positionen (saubere Positionen mit `0` Findings und `0,00 EUR`);
 hat die Rechnung keine Findings, erscheint zusätzlich ein Hinweis, und nur wenn
 gar keine Positionen existieren, wird die Tabelle ausgeblendet.
+
+### CSV-Export
+
+Kreditorenbuchhaltung, Einkauf und Revision können die priorisierte
+Findings-Liste und die Rechnungsliste als CSV herunterladen, um sie in Excel
+weiterzuverarbeiten, mit dem Einkauf zu teilen oder als Prüfnachweis abzulegen.
+Beide Endpunkte liefern `Content-Type: text/csv; charset=utf-8`, einen
+`Content-Disposition`-Header mit Dateinamen und nutzen den `csv`-Writer der
+Standardbibliothek (`\r\n`-Zeilenende, `utf-8`). Es gibt keine neuen
+Laufzeit-Abhängigkeiten und keine neuen Tabellen oder Spalten.
+
+| Endpoint | Datei | Filter | Spalten |
+| --- | --- | --- | --- |
+| `GET /api/findings/export` | `findings.csv` | `status`, `min_amount`, `entity`, `review_status` | `id`, `invoice_id`, `invoice_number`, `supplier`, `entity`, `cost_center`, `finding_type`, `amount`, `status`, `feedback`, `message`, `created_at` |
+| `GET /api/invoices/export` | `invoices.csv` | `entity`, `cost_center` | `id`, `invoice_number`, `supplier`, `entity`, `cost_center`, `invoice_date`, `total_amount`, `finding_count`, `open_finding_count`, `reviewed_finding_count`, `open_amount`, `review_status`, `created_at` |
+
+Die Filter entsprechen den JSON-Endpunkten: `?review_status=open` verhält sich
+wie bei `GET /api/findings`, `?entity=`/`?cost_center=` wie bei
+`GET /api/invoices`. Ein unbekannter validierter Wert (z. B.
+`review_status=foo`) liefert weiterhin `400` mit JSON-Fehlerkörper statt einer
+CSV-Datei. Ein unbekannter `entity`-/`cost_center`-Wert ist keine Fehlbedienung
+und ergibt eine leere, aber gültige CSV (nur Kopfzeile).
+
+```sh
+# Findings (offen, Gesellschaft DE01) als CSV herunterladen
+curl -sS -OJ 'http://localhost:8080/api/findings/export?status=open&entity=DE01'
+
+# Findings nach Rechnungs-Prüfstatus filtern
+curl -sS 'http://localhost:8080/api/findings/export?review_status=open' -o findings.csv
+
+# Rechnungen der Gesellschaft DE01 exportieren
+curl -sS 'http://localhost:8080/api/invoices/export?entity=DE01' -o invoices.csv
+
+# Unbekannter review_status -> 400 mit JSON-Fehlerkörper (keine CSV)
+curl -sS -i 'http://localhost:8080/api/findings/export?review_status=foo'
+```
+
+Die Web-Oberfläche bietet in der Findings- und der Rechnungs-Sektion je einen
+Button **„Als CSV exportieren“**, der die aktuell gewählten Filter (Gesellschaft
+sowie in der Findings-Sektion den Prüfstatus) als Query-Parameter an den Export
+anhängt und die Datei herunterlädt.
 
 ### CSV-Format für Rechnungsimport
 
