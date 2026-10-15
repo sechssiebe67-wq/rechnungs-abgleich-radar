@@ -55,6 +55,8 @@ def _webhook_payload(digest: dict) -> dict:
         "finding_count": count,
         "entities": entities,
         "cost_centers": cost_centers,
+        "by_entity": list(digest.get("by_entity") or []),
+        "by_cost_center": list(digest.get("by_cost_center") or []),
         "top_findings": top,
     }
 
