@@ -83,8 +83,8 @@ python3 -m unittest discover -s tests -v
 | `POST /api/reconcile` | Alle Rechnungen (oder `{"invoice_id": …}`) neu abgleichen |
 | `GET /api/findings?status=open&min_amount=&entity=` | Priorisierte Auffälligkeiten; optional seitenweise (`?limit=`, `?offset=`) und sortiert (`?sort=`) |
 | `POST /api/findings/:id/feedback` | `{"verdict": "confirmed"|"false_alarm"}` |
-| `GET /api/digest/weekly[.html]?entity=` | Wöchentlicher Digest als JSON/HTML, optional auf Gesellschaften gefiltert |
-| `POST /api/digest/weekly/send` | Digest aktiv per Webhook/SMTP zustellen (`{"entities": ["DE01"]}`), liefert je Kanal `sent`/`skipped`/`error` |
+| `GET /api/digest/weekly[.html]?entity=&cost_center=` | Wöchentlicher Digest als JSON/HTML, optional auf Gesellschaften und Kostenstellen gefiltert (UND-verknüpft) |
+| `POST /api/digest/weekly/send` | Digest aktiv per Webhook/SMTP zustellen (`{"entities": ["DE01"], "cost_centers": ["KST-100"]}`), liefert je Kanal `sent`/`skipped`/`error` |
 
 ### Gesellschaften (Multi-Gesellschafts-Rollup)
 
@@ -587,14 +587,21 @@ zuletzt geladene Ansicht zu verwerfen.
 
 Der Wochen-Digest ist als JSON/HTML abrufbar und kann zusätzlich **aktiv
 zugestellt** werden — per Webhook (Slack-/Mattermost-kompatibles JSON mit
-Gesamtbetrag, Anzahl Findings, berücksichtigten Gesellschaften `entities` und
-Top-5-Auffälligkeiten) und/oder per SMTP als HTML-E-Mail. Beide Kanäle sind
-unabhängig: Fällt einer aus (`error`), wird der andere trotzdem versucht; ein
-nicht konfigurierter Kanal meldet `skipped`. Über `?entity=` (Abruf) bzw.
-`{"entities": ["DE01"]}` (Versand) lässt sich der Digest auf Gesellschaften
-eingrenzen; HTML-Kopf und die Spalte „Gesellschaft“ weisen sie je Finding aus.
-Im Webhook-Payload sind die berücksichtigten Gesellschaften im Feld `entities`
-enthalten.
+Gesamtbetrag, Anzahl Findings, berücksichtigten Gesellschaften `entities`,
+berücksichtigten Kostenstellen `cost_centers` und Top-5-Auffälligkeiten)
+und/oder per SMTP als HTML-E-Mail. Beide Kanäle sind unabhängig: Fällt einer
+aus (`error`), wird der andere trotzdem versucht; ein nicht konfigurierter
+Kanal meldet `skipped`. Über `?entity=` und `?cost_center=` (Abruf) bzw.
+`{"entities": ["DE01"], "cost_centers": ["KST-100"]}` (Versand) lässt sich der
+Digest auf Gesellschaften und/oder Kostenstellen eingrenzen; beide Filter sind
+**UND-verknüpft** (eine Rechnung muss zu einer gewählten Gesellschaft *und*
+einer gewählten Kostenstelle gehören). Ohne Filter werden alle Rechnungen
+berücksichtigt. Der HTML-Kopf nennt die berücksichtigten Gesellschaften und —
+sofern vorhanden — die Kostenstellen; die Kostenstellen-Zeile entfällt bei
+leerer Liste. Ein unbekannter Filterwert ist keine Fehlbedienung: Der Abruf
+antwortet `200` mit leerer `findings`-Liste, `total_amount == 0.0` und dem
+angeforderten Wert in `cost_centers`. Im Webhook-Payload stehen die
+berücksichtigten Werte in den Feldern `entities` und `cost_centers`.
 
 ```sh
 # Webhook (Slack/Mattermost) aktivieren
@@ -608,10 +615,13 @@ export RADAR_DIGEST_SMTP_PASSWORD=geheim
 export RADAR_DIGEST_SMTP_FROM=radar@example.com
 export RADAR_DIGEST_SMTP_TO=kreditoren@example.com
 
-# Zustellung manuell auslösen (optional auf Gesellschaften begrenzt)
+# Nur die Kostenstelle KST-100 der Gesellschaft DE01 abrufen (mehrfach erlaubt)
+curl -sS 'http://localhost:8080/api/digest/weekly?entity=DE01&cost_center=KST-100'
+
+# Zustellung manuell auslösen (optional auf Gesellschaften und Kostenstellen begrenzt)
 curl -sS -X POST http://localhost:8080/api/digest/weekly/send \
   -H 'Content-Type: application/json' \
-  -d '{"entities": ["DE01"]}'
+  -d '{"entities": ["DE01"], "cost_centers": ["KST-100"]}'
 ```
 
 Die Antwort listet je Kanal den Status:

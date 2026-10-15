@@ -40,6 +40,11 @@ def _webhook_payload(digest: dict) -> dict:
     count = int(digest.get("finding_count", 0))
     entities = list(digest.get("entities") or [])
     scope = ", ".join(str(entity) for entity in entities) or "alle Gesellschaften"
+    cost_centers = list(digest.get("cost_centers") or [])
+    if cost_centers:
+        scope += " · Kostenstelle(n): " + ", ".join(
+            str(cost_center) for cost_center in cost_centers
+        )
     text = (
         "%s (%s): %d offene Auffälligkeiten, %.2f EUR potenzielles "
         "Abweichungsvolumen." % (WEBHOOK_SUBJECT, scope, count, total)
@@ -49,6 +54,7 @@ def _webhook_payload(digest: dict) -> dict:
         "total_amount": total,
         "finding_count": count,
         "entities": entities,
+        "cost_centers": cost_centers,
         "top_findings": top,
     }
 
@@ -127,16 +133,20 @@ def _deliver(
 
 
 def deliver_digest(
-    store: Store, settings: Settings, entities: Optional[List[str]] = None
+    store: Store,
+    settings: Settings,
+    entities: Optional[List[str]] = None,
+    cost_centers: Optional[List[str]] = None,
 ) -> dict:
     """Deliver the current weekly digest over every configured channel.
 
     ``entities`` optionally restricts the digest (and the webhook payload) to
-    the selected societies. Always returns both channel entries. Unconfigured
-    channels are reported as ``skipped``; a failure in one channel is isolated
-    from the other.
+    the selected societies; ``cost_centers`` restricts it to the selected cost
+    centers (AND-combined with ``entities``). Always returns both channel
+    entries. Unconfigured channels are reported as ``skipped``; a failure in
+    one channel is isolated from the other.
     """
-    digest = weekly_digest(store, entities=entities)
+    digest = weekly_digest(store, entities=entities, cost_centers=cost_centers)
 
     webhook_configured = bool(settings.digest_webhook_url)
     email_configured = bool(settings.digest_smtp_host and settings.digest_smtp_to)
