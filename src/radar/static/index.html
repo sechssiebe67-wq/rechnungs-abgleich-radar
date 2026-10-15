@@ -103,7 +103,14 @@
   </section>
 
   <section>
-    <h2>Wochen-Digest <span class="muted">(berücksichtigte Gesellschaften)</span></h2>
+    <h2>Wochen-Digest <span class="muted">(berücksichtigte Gesellschaften und Kostenstellen)</span></h2>
+    <div class="controls">
+      <label class="muted">Kostenstellen (Mehrfachauswahl)
+        <select id="digest-cost-center-filter" multiple size="4" onchange="loadDigest()"></select>
+      </label>
+      <button id="digest-send" onclick="sendDigest()">Digest jetzt senden</button>
+      <span class="muted" id="digest-send-status"></span>
+    </div>
     <p class="muted" id="digest-entities">Lade …</p>
   </section>
 
@@ -352,25 +359,62 @@ function selectedCostCenters() {
   if (!sel) return [];
   return Array.from(sel.selectedOptions).map(o => o.value);
 }
-async function loadCostCenters() {
-  const d = await api('/api/cost-centers');
-  const sel = document.getElementById('cost-center-filter');
+function selectedDigestCostCenters() {
+  const sel = document.getElementById('digest-cost-center-filter');
+  if (!sel) return [];
+  return Array.from(sel.selectedOptions).map(o => o.value);
+}
+function fillCostCenterSelect(id, costCenters, previous) {
+  const sel = document.getElementById(id);
   if (!sel) return;
-  const previous = new Set(selectedCostCenters());
-  sel.innerHTML = (d.cost_centers || [])
+  sel.innerHTML = (costCenters || [])
     .map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('');
   Array.from(sel.options).forEach(o => { if (previous.has(o.value)) o.selected = true; });
 }
+async function loadCostCenters() {
+  const d = await api('/api/cost-centers');
+  fillCostCenterSelect('cost-center-filter', d.cost_centers, new Set(selectedCostCenters()));
+  fillCostCenterSelect('digest-cost-center-filter', d.cost_centers, new Set(selectedDigestCostCenters()));
+}
+function digestQuery() {
+  const parts = [];
+  selectedEntities().forEach(e => parts.push('entity=' + encodeURIComponent(e)));
+  selectedDigestCostCenters().forEach(c => parts.push('cost_center=' + encodeURIComponent(c)));
+  return parts.length ? '?' + parts.join('&') : '';
+}
 async function loadDigest() {
-  const d = await api('/api/digest/weekly' + entityQuery());
+  const query = digestQuery();
+  const d = await api('/api/digest/weekly' + query);
   const entities = d.entities || [];
-  document.getElementById('digest-entities').textContent = entities.length
-    ? `Berücksichtigte Gesellschaften: ${entities.join(', ')} — ${money(d.total_amount || 0)} aus ${d.finding_count || 0} Auffälligkeiten.`
-    : 'Keine offenen Auffälligkeiten.';
+  const costCenters = d.cost_centers || [];
+  const parts = [
+    `Gesellschaften: ${entities.length ? entities.join(', ') : 'alle'}`,
+    `Kostenstellen: ${costCenters.length ? costCenters.join(', ') : 'alle'}`,
+    `${money(d.total_amount || 0)} aus ${d.finding_count || 0} Auffälligkeiten`,
+  ];
+  document.getElementById('digest-entities').textContent = parts.join(' — ') + '.';
   const htmlLink = document.getElementById('digest-html-link');
   const jsonLink = document.getElementById('digest-json-link');
-  if (htmlLink) htmlLink.href = '/api/digest/weekly.html' + entityQuery();
-  if (jsonLink) jsonLink.href = '/api/digest/weekly' + entityQuery();
+  if (htmlLink) htmlLink.href = '/api/digest/weekly.html' + query;
+  if (jsonLink) jsonLink.href = '/api/digest/weekly' + query;
+}
+async function sendDigest() {
+  const status = document.getElementById('digest-send-status');
+  status.textContent = 'Sende …';
+  try {
+    const d = await api('/api/digest/weekly/send', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        entities: selectedEntities(),
+        cost_centers: selectedDigestCostCenters(),
+      }),
+    });
+    status.textContent = (d.channels || [])
+      .map(c => `${c.channel}: ${c.status}`).join(', ');
+  } catch (e) {
+    status.textContent = 'Fehler: ' + e.message;
+  }
 }
 async function loadFindings() {
   const state = listState.findings;

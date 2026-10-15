@@ -522,26 +522,39 @@ class RadarHandler(BaseHTTPRequestHandler):
 
     def h_digest(self, params, query) -> None:
         entities = _query_list(query, "entity") or None
-        self._send_json(weekly_digest(self.store, entities=entities))
+        cost_centers = _query_list(query, "cost_center") or None
+        self._send_json(
+            weekly_digest(self.store, entities=entities, cost_centers=cost_centers)
+        )
 
     def h_digest_html(self, params, query) -> None:
         entities = _query_list(query, "entity") or None
+        cost_centers = _query_list(query, "cost_center") or None
         html_body = render_html(
-            weekly_digest(self.store, entities=entities)
+            weekly_digest(self.store, entities=entities, cost_centers=cost_centers)
         ).encode("utf-8")
         self._send(200, html_body, "text/html; charset=utf-8")
 
     def h_send_digest(self, params, query) -> None:
         data = self._json_body()
-        raw_entities = data.get("entities") if isinstance(data, dict) else None
-        if isinstance(raw_entities, str):
-            raw_entities = [raw_entities]
-        if raw_entities:
-            entities = [str(e).strip() for e in raw_entities if str(e).strip()]
-        else:
-            entities = []
+
+        def _body_list(name: str) -> List[str]:
+            raw = data.get(name) if isinstance(data, dict) else None
+            if isinstance(raw, str):
+                raw = [raw]
+            if not raw:
+                return []
+            return [str(value).strip() for value in raw if str(value).strip()]
+
+        entities = _body_list("entities")
+        cost_centers = _body_list("cost_centers")
         self._send_json(
-            deliver_digest(self.store, self.settings, entities or None)
+            deliver_digest(
+                self.store,
+                self.settings,
+                entities or None,
+                cost_centers or None,
+            )
         )
 
 

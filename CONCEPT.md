@@ -243,8 +243,18 @@ persistentem Speicher.
     ohne Verlust der zuletzt geladenen Ansicht.
 - **Wöchentlicher Digest** als E-Mail-fähiger HTML-Report und als JSON.
   - Der Digest berücksichtigt die gewählten Gesellschaften (`?entity=` bzw.
-    `{"entities": [...]}` beim Versand), weist den Gesamtbetrag konsolidiert und
-    die berücksichtigten Gesellschaften im Kopf des HTML-Reports je Finding aus.
+    `{"entities": [...]}` beim Versand) **und Kostenstellen** (`?cost_center=`,
+    mehrfach angebbar, bzw. `{"cost_centers": [...]}` beim Versand). Beide Filter
+    werden **UND-verknüpft**: Eine Rechnung muss zu einer gewählten Gesellschaft
+    *und* zu einer gewählten Kostenstelle gehören. Ohne Filter berücksichtigt
+    der Digest alle Rechnungen.
+  - Die Antwort weist den Gesamtbetrag konsolidiert, die berücksichtigten
+    Gesellschaften (`entities`) und die berücksichtigten Kostenstellen
+    (`cost_centers`, sortiert und dedupliziert) aus; der HTML-Kopf nennt beide
+    Listen (die Kostenstellen-Zeile entfällt bei leerer Liste).
+  - Ein unbekannter Filterwert ist keine Fehlbedienung: Der Endpoint antwortet
+    `200` mit leerer `findings`-Liste, `total_amount == 0.0` und dem
+    angeforderten Wert in `cost_centers` widergespiegelt.
 - **Digest-Versand per Webhook und SMTP** (`radar/notify.py`)
   - Aktive Zustellung des Wochen-Digests statt manuellem Abruf.
   - **Webhook** (Slack-/Mattermost-kompatibles JSON mit Gesamtbetrag, Anzahl
@@ -283,7 +293,11 @@ priorisiert die Freigabe-Entscheidung.
    Webhook- und SMTP-Kanälen und Helm-Konfiguration (`digest.*`). Der
    **Rollup über mehrere Gesellschaften** ist ebenfalls umgesetzt: Der Digest
    akzeptiert `?entity=` bzw. `{"entities": [...]}`, weist den Gesamtbetrag
-   konsolidiert und die berücksichtigten Gesellschaften aus.
+   konsolidiert und die berücksichtigten Gesellschaften aus. **Umgesetzt:**
+   Zusätzlich lässt sich der Digest auf einzelne **Kostenstellen** eingrenzen
+   (`?cost_center=` bzw. `{"cost_centers": [...]}`), UND-verknüpft mit dem
+   Gesellschafts-Filter; die berücksichtigten Kostenstellen stehen in JSON,
+   HTML, Webhook und E-Mail (`cost_centers`).
 5. **ROI-Nachweis — umgesetzt, inkl. Artikel-Aufschlüsselung.** Auswertung
    vermiedener Beträge (bestätigte Findings × Prüfaufwand) für den Preistest.
    Als Zwischenschritt ist die **lieferantenbezogene Precision** über
@@ -367,8 +381,9 @@ Der **Digest-Versand** unterstützt den Concierge-Test direkt: Der Wochen-Digest
 wird den Testkunden per Webhook/SMTP aktiv zugestellt (statt manuellem Abruf),
 sodass die Kreditorenbuchhaltungen wöchentlich ohne Zusatzaufwand beliefert
 werden. Der Digest lässt sich dabei auf die Gesellschaften der jeweiligen
-Buchhaltung eingrenzen (`entities`). So misst der Test die tatsächliche Nutzung
-und die Precision weiterhin über das Feedback in der Oberfläche.
+Buchhaltung (`entities`) und zusätzlich auf einzelne Kostenstellen
+(`cost_centers`, UND-verknüpft) eingrenzen. So misst der Test die tatsächliche
+Nutzung und die Precision weiterhin über das Feedback in der Oberfläche.
 
 ## Delivery contract
 

@@ -675,6 +675,7 @@ class Store:
         min_amount: Optional[float],
         invoice_id: Optional[int],
         entities: Optional[List[str]],
+        cost_centers: Optional[List[str]],
     ) -> tuple:
         """Build the shared WHERE clauses/params for findings queries."""
         clauses: List[str] = []
@@ -683,6 +684,10 @@ class Store:
             placeholders = ", ".join("?" for _ in entities)
             clauses.append("i.entity IN (%s)" % placeholders)
             params.extend(entities)
+        if cost_centers:
+            placeholders = ", ".join("?" for _ in cost_centers)
+            clauses.append("i.cost_center IN (%s)" % placeholders)
+            params.extend(cost_centers)
         if status:
             clauses.append("f.status = ?")
             params.append(status)
@@ -700,6 +705,7 @@ class Store:
         min_amount: Optional[float] = None,
         invoice_id: Optional[int] = None,
         entities: Optional[List[str]] = None,
+        cost_centers: Optional[List[str]] = None,
         limit: Optional[int] = None,
         offset: Optional[int] = None,
         order_by: Optional[str] = None,
@@ -709,6 +715,9 @@ class Store:
         Every row carries the owning invoice's ``entity`` so callers (e.g. the
         digest) can show the society per finding. ``entities=None`` applies no
         entity filter and stays identical to the previous behaviour.
+        ``cost_centers`` filters on the owning invoice's cost center and is
+        AND-combined with ``entities`` (an unknown value yields an empty list,
+        not an error). ``None`` applies no cost-center filter.
 
         ``order_by`` must be one of :data:`FINDING_ORDER_BY`; ``None`` keeps the
         documented default ordering (amount descending) and is fully backwards
@@ -729,7 +738,7 @@ class Store:
             "LEFT JOIN invoices i ON i.id = f.invoice_id"
         )
         clauses, params = self._finding_filters(
-            status, min_amount, invoice_id, entities
+            status, min_amount, invoice_id, entities, cost_centers
         )
         if clauses:
             query += " WHERE " + " AND ".join(clauses)
@@ -753,6 +762,7 @@ class Store:
         min_amount: Optional[float] = None,
         invoice_id: Optional[int] = None,
         entities: Optional[List[str]] = None,
+        cost_centers: Optional[List[str]] = None,
     ) -> int:
         """Count findings matching the same filters as :meth:`list_findings`.
 
@@ -764,7 +774,7 @@ class Store:
             "LEFT JOIN invoices i ON i.id = f.invoice_id"
         )
         clauses, params = self._finding_filters(
-            status, min_amount, invoice_id, entities
+            status, min_amount, invoice_id, entities, cost_centers
         )
         if clauses:
             query += " WHERE " + " AND ".join(clauses)

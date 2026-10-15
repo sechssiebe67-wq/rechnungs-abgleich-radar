@@ -11,7 +11,10 @@ from .models import FINDING_LABELS
 
 
 def weekly_digest(
-    store: Store, limit: int = 100, entities: Optional[List[str]] = None
+    store: Store,
+    limit: int = 100,
+    entities: Optional[List[str]] = None,
+    cost_centers: Optional[List[str]] = None,
 ) -> dict:
     """Build the weekly digest, optionally restricted to selected societies.
 
@@ -19,20 +22,33 @@ def weekly_digest(
     the response lists exactly those societies under ``entities``. Without a
     filter all societies occurring in the invoices are reported so the JSON,
     HTML, webhook and e-mail views share one consolidated figure.
+
+    ``cost_centers`` mirrors that behaviour for the invoice cost center and is
+    AND-combined with ``entities``: an invoice must belong to one of the chosen
+    societies *and* one of the chosen cost centers. Unknown values are not an
+    error; they simply yield no findings. The considered cost centers are
+    reported under ``cost_centers`` (sorted, deduplicated).
     """
-    findings = store.list_findings(status="open", entities=entities)
+    findings = store.list_findings(
+        status="open", entities=entities, cost_centers=cost_centers
+    )
     findings = findings[:limit]
     total = round(sum(float(f["amount"]) for f in findings), 2)
     if entities:
         considered = sorted({str(entity) for entity in entities})
     else:
         considered = store.list_entities()
+    if cost_centers:
+        considered_cost_centers = sorted({str(cc) for cc in cost_centers})
+    else:
+        considered_cost_centers = store.list_cost_centers()
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "period_days": 7,
         "total_amount": total,
         "finding_count": len(findings),
         "entities": considered,
+        "cost_centers": considered_cost_centers,
         "stats": store.stats(),
         "findings": [_decorate(f) for f in findings],
     }
@@ -70,6 +86,15 @@ def render_html(digest: dict) -> str:
     )
     entities = digest.get("entities") or []
     entities_text = html.escape(", ".join(str(entity) for entity in entities)) or "alle"
+    cost_centers = digest.get("cost_centers") or []
+    cost_centers_line = ""
+    if cost_centers:
+        cost_centers_text = html.escape(
+            ", ".join(str(cost_center) for cost_center in cost_centers)
+        )
+        cost_centers_line = (
+            "<p>Kostenstelle(n): <strong>%s</strong></p>" % cost_centers_text
+        )
     stats = digest["stats"]
     precision = stats.get("precision")
     precision_text = "n/a" if precision is None else "%.0f%%" % (precision * 100)
@@ -79,6 +104,7 @@ def render_html(digest: dict) -> str:
 <body style="font-family:sans-serif;max-width:900px;margin:2rem auto">
 <h1>Wochen-Digest — Rechnungs-Abgleich-Radar</h1>
 <p>Gesellschaft(en): <strong>{entities}</strong></p>
+{cost_centers_line}
 <p>Erstellt: {generated_at}. Potenzielles Abweichungsvolumen:
 <strong>{total:.2f} EUR</strong> aus {count} Auffälligkeiten.</p>
 <p>Rechnungen: {invoices} · Findings: {findings} · Precision (Feedback):
@@ -93,6 +119,7 @@ Rechnungs-Abgleich-Radar. Zahlungsausführung ist nicht Teil dieses Systems.</p>
 </body></html>
 """.format(
         entities=entities_text,
+        cost_centers_line=cost_centers_line,
         generated_at=html.escape(digest["generated_at"]),
         total=float(digest["total_amount"]),
         count=digest["finding_count"],
