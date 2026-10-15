@@ -27,7 +27,7 @@
   .muted { color:#8b949e; font-size:.8rem; }
   .row-actions { display:flex; gap:.4rem; }
   .controls { display:flex; gap:.75rem; align-items:center; flex-wrap:wrap; margin:.5rem 0; }
-  .controls select { background:#0d1117; color:#e6edf3; border:1px solid #30363d; border-radius:6px; padding:.3rem .5rem; font-size:.8rem; }
+  .controls select, .controls input { background:#0d1117; color:#e6edf3; border:1px solid #30363d; border-radius:6px; padding:.3rem .5rem; font-size:.8rem; }
   .controls button:disabled { opacity:.45; cursor:not-allowed; }
   .error { color:#f85149; font-size:.8rem; }
   footer { text-align:center; color:#8b949e; font-size:.8rem; padding:2rem; }
@@ -79,8 +79,26 @@
       <span class="error" id="invoices-error"></span>
     </div>
     <table>
-      <thead><tr><th>Rechnungsnr.</th><th>Lieferant</th><th>Gesellschaft</th><th>Datum</th><th class="amount">Findings</th><th class="amount">Offen</th></tr></thead>
-      <tbody id="invoices"><tr><td colspan="6" class="muted">Lade …</td></tr></tbody>
+      <thead><tr><th>Rechnungsnr.</th><th>Lieferant</th><th>Gesellschaft</th><th>Datum</th><th class="amount">Findings</th><th class="amount">Offen</th><th></th></tr></thead>
+      <tbody id="invoices"><tr><td colspan="7" class="muted">Lade …</td></tr></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Rechnungs-Audit <span class="muted">(Findings gruppiert nach Artikel und Position)</span></h2>
+    <p class="muted">Zeigt je Rechnung, welche Artikel und Positionen das Abweichungsvolumen treiben.</p>
+    <div class="controls">
+      <label class="muted">Rechnungs-ID
+        <input id="audit-invoice-id" type="number" min="1" placeholder="z. B. 1" style="width:8rem">
+      </label>
+      <button onclick="loadAudit()">Audit anzeigen</button>
+      <span class="muted" id="audit-summary">—</span>
+      <span class="error" id="audit-error"></span>
+    </div>
+    <p class="muted" id="audit-hint">Keine Rechnung ausgewählt.</p>
+    <table id="audit-table" style="margin-top:.5rem">
+      <thead><tr><th>Artikel</th><th>Position</th><th class="amount">Anzahl Findings</th><th class="amount">Abweichungsbetrag (EUR)</th><th>Finding-Typen</th></tr></thead>
+      <tbody id="audit-items"><tr><td colspan="5" class="muted">Keine Rechnung ausgewählt.</td></tr></tbody>
     </table>
   </section>
 
@@ -386,11 +404,61 @@ async function loadInvoices() {
       <td>${esc(i.invoice_date || '—')}</td>
       <td class="amount">${esc(i.finding_count)}</td>
       <td class="amount">${money(i.open_amount)}</td>
+      <td><button class="secondary" onclick="showAudit(${i.id})">Audit</button></td>
     </tr>`).join('');
-    document.getElementById('invoices').innerHTML = rows || '<tr><td colspan="6" class="muted">Keine Rechnungen vorhanden.</td></tr>';
+    document.getElementById('invoices').innerHTML = rows || '<tr><td colspan="7" class="muted">Keine Rechnungen vorhanden.</td></tr>';
     updatePager('invoices', d);
   } catch (e) {
     showListError('invoices', e.message);
+  }
+}
+function showAudit(invoiceId) {
+  const input = document.getElementById('audit-invoice-id');
+  if (input) input.value = invoiceId;
+  return loadAudit();
+}
+async function loadAudit() {
+  const input = document.getElementById('audit-invoice-id');
+  const id = ((input && input.value) || '').trim();
+  const error = document.getElementById('audit-error');
+  const summary = document.getElementById('audit-summary');
+  const hint = document.getElementById('audit-hint');
+  const table = document.getElementById('audit-table');
+  const tbody = document.getElementById('audit-items');
+  if (!id) {
+    error.textContent = 'Bitte eine Rechnungs-ID angeben.';
+    return;
+  }
+  try {
+    const d = await api('/api/invoices/' + encodeURIComponent(id));
+    error.textContent = '';
+    const items = d.items || [];
+    const invoice = d.invoice || {};
+    const hasFindings = (d.findings || []).length > 0;
+    summary.textContent = `Rechnung ${invoice.invoice_number || id} · ${invoice.supplier || ''} · Abweichungsvolumen ${money(d.items_total_amount || 0)}`;
+    if (!items.length) {
+      hint.textContent = 'Keine Rechnungspositionen vorhanden.';
+      table.style.display = 'none';
+      tbody.innerHTML = '';
+      return;
+    }
+    hint.textContent = hasFindings
+      ? ''
+      : 'Keine Findings für diese Rechnung — alle Positionen im Toleranzbereich.';
+    table.style.display = '';
+    tbody.innerHTML = items.map(item => `<tr>
+      <td>${esc(item.article)}</td>
+      <td>${item.position == null ? '—' : esc(item.position)}</td>
+      <td class="amount">${esc(item.finding_count)}</td>
+      <td class="amount">${money(item.amount)}</td>
+      <td>${(item.finding_types || []).map(esc).join(', ') || '—'}</td>
+    </tr>`).join('');
+  } catch (e) {
+    error.textContent = 'Fehler: ' + e.message;
+    summary.textContent = '—';
+    hint.textContent = '';
+    table.style.display = 'none';
+    tbody.innerHTML = '';
   }
 }
 async function loadSupplierPrecision() {

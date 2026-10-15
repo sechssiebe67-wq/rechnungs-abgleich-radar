@@ -140,6 +140,40 @@ class FlowTests(ApiTestCase):
         self.assertEqual(status, 200)
         self.assertEqual(audit["items"][0]["reference_price"], 1.0)
 
+    def test_audit_endpoint_groups_findings_by_position(self):
+        self.json_request(
+            "POST",
+            "/api/purchase-orders",
+            {
+                "po_number": "PO-1",
+                "supplier": "ACME GmbH",
+                "items": [{"article": "Schraube", "quantity": 10, "unit_price": 1.0}],
+            },
+        )
+        _, payload = self.json_request(
+            "POST",
+            "/api/invoices",
+            {
+                "invoice_number": "RE-AUDIT",
+                "supplier": "ACME GmbH",
+                "invoice_date": "2026-01-15",
+                "po_number": "PO-1",
+                "items": [{"article": "Schraube", "quantity": 10, "unit_price": 2.0}],
+            },
+        )
+        invoice_id = payload["invoice_id"]
+        status, audit = self.json_request("GET", "/api/invoices/%d" % invoice_id)
+        self.assertEqual(status, 200)
+        self.assertIn("items_total_amount", audit)
+        self.assertAlmostEqual(audit["items_total_amount"], 10.0, places=2)
+
+        group = next(item for item in audit["items"] if item["finding_count"])
+        self.assertEqual(group["article"], "Schraube")
+        self.assertEqual(group["position"], 1)
+        self.assertEqual(group["finding_types"], ["price_deviation"])
+        self.assertEqual(group["findings"][0]["finding_type"], "price_deviation")
+        self.assertEqual(group["findings"][0]["id"], payload["findings"][0])
+
     def test_validation_error(self):
         status, payload = self.json_request("POST", "/api/suppliers", {})
         self.assertEqual(status, 400)

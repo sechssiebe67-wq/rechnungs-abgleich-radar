@@ -237,5 +237,148 @@ class AuditTests(unittest.TestCase):
         self.assertEqual(audit["items"][0]["findings"][0]["finding_type"], "price_deviation")
 
 
+class AuditGroupingTests(unittest.TestCase):
+    def test_items_sum_matches_findings(self):
+        store, settings = seeded_store()
+        store.add_reference_price(
+            ReferencePrice("ACME GmbH", "Mutter M8", unit_price=0.10, source="contract")
+        )
+        invoice_id = store.add_invoice(
+            make_invoice(
+                "RE-G",
+                "ACME GmbH",
+                [
+                    dict(position=1, article="Schraube M8", quantity=100, unit_price=0.50),
+                    dict(position=2, article="Mutter M8", quantity=50, unit_price=0.14),
+                ],
+                po_number="PO-77",
+            )
+        )
+        reconcile_invoice(store, invoice_id, settings)
+        audit = invoice_audit(store, invoice_id, settings)
+        findings = store.list_findings(invoice_id=invoice_id)
+
+        self.assertIn("items_total_amount", audit)
+        self.assertAlmostEqual(audit["items_total_amount"], 12.0, places=2)
+        self.assertAlmostEqual(
+            audit["items_total_amount"],
+            round(sum(float(f["amount"]) for f in findings), 2),
+            places=2,
+        )
+        self.assertAlmostEqual(
+            round(sum(item["amount"] for item in audit["items"]), 2),
+            audit["items_total_amount"],
+            places=2,
+        )
+        for item in audit["items"]:
+            for field in (
+                "article",
+                "position",
+                "finding_count",
+                "amount",
+                "finding_types",
+                "findings",
+            ):
+                self.assertIn(field, item)
+
+    def test_items_include_clean_positions(self):
+        store, settings = seeded_store()
+        invoice_id = store.add_invoice(
+            make_invoice(
+                "RE-CLEAN",
+                "ACME GmbH",
+                [
+                    dict(position=1, article="Schraube M8", quantity=100, unit_price=0.50),
+                    dict(position=2, article="Mutter M8", quantity=50, unit_price=0.10),
+                ],
+                po_number="PO-77",
+            )
+        )
+        reconcile_invoice(store, invoice_id, settings)
+        audit = invoice_audit(store, invoice_id, settings)
+
+        # Every compared position is listed, including the clean one.
+        self.assertEqual(len(audit["items"]), 2)
+        clean = next(item for item in audit["items"] if item["position"] == 2)
+        self.assertEqual(clean["article"], "Mutter M8")
+        self.assertEqual(clean["findings"], [])
+        self.assertEqual(clean["finding_count"], 0)
+        self.assertEqual(clean["finding_types"], [])
+        self.assertAlmostEqual(clean["amount"], 0.0, places=2)
+        self.assertAlmostEqual(
+            round(sum(item["amount"] for item in audit["items"]), 2),
+            audit["items_total_amount"],
+            places=2,
+        )
+
+    def test_findings_without_position_are_grouped(self):
+        store, settings = seeded_store()
+        invoice_id = store.add_invoice(
+            make_invoice(
+                "RE-NP",
+                "ACME GmbH",
+                [dict(position=1, article="Schraube M8", quantity=10, unit_price=0.40)],
+            )
+        )
+        reconcile_invoice(store, invoice_id, settings)
+        audit = invoice_audit(store, invoice_id, settings)
+        null_groups = [item for item in audit["items"] if item["position"] is None]
+        self.assertEqual(len(null_groups), 1)
+        self.assertEqual(null_groups[0]["article"], "(ohne Position)")
+        self.assertIn("missing_po", null_groups[0]["finding_types"])
+        self.assertEqual(null_groups[0]["finding_count"], 1)
+
+    def test_items_sorted_by_amount_then_article(self):
+        store, settings = seeded_store()
+        for article in ("Zebra Teil", "Alpha Teil"):
+            store.add_reference_price(
+                ReferencePrice("ACME GmbH", article, unit_price=0.10, source="contract")
+            )
+        invoice_id = store.add_invoice(
+            make_invoice(
+                "RE-SORT",
+                "ACME GmbH",
+                [
+                    dict(position=1, article="Zebra Teil", quantity=10, unit_price=0.20),
+                    dict(position=2, article="Alpha Teil", quantity=10, unit_price=0.20),
+                ],
+                po_number="PO-77",
+            )
+        )
+        reconcile_invoice(store, invoice_id, settings)
+        audit = invoice_audit(store, invoice_id, settings)
+        grouped = [item for item in audit["items"] if item["finding_count"] > 0]
+        self.assertEqual([item["article"] for item in grouped], ["Alpha Teil", "Zebra Teil"])
+
+    def test_audit_keeps_existing_fields(self):
+        store, settings = seeded_store()
+        invoice_id = store.add_invoice(
+            make_invoice(
+                "RE-REG",
+                "ACME GmbH",
+                [dict(position=1, article="Schraube M8", quantity=100, unit_price=0.50)],
+                po_number="PO-77",
+            )
+        )
+        reconcile_invoice(store, invoice_id, settings)
+        audit = invoice_audit(store, invoice_id, settings)
+        for field in (
+            "invoice",
+            "items",
+            "items_total_amount",
+            "findings",
+            "unmatched_findings",
+            "applied_rule",
+        ):
+            self.assertIn(field, audit)
+        item = audit["items"][0]
+        self.assertEqual(item["reference_price"], 0.40)
+        self.assertEqual(item["reference_source"], "bestellung")
+        self.assertEqual(item["findings"][0]["finding_type"], "price_deviation")
+        self.assertEqual(item["finding_count"], 1)
+        self.assertEqual(item["finding_types"], ["price_deviation"])
+        self.assertAlmostEqual(item["amount"], 10.0, places=2)
+
+
 if __name__ == "__main__":
     unittest.main()
