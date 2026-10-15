@@ -408,9 +408,16 @@ persistentem Speicher.
     Laufzeit-Abhängigkeiten und keine neuen Tabellen oder Spalten hinzu.
     Unbekannte validierte Filterwerte (z. B. `review_status=foo`) liefern `400`
     mit JSON-Fehlerkörper statt einer CSV-Datei.
+  - User-kontrollierte Textzellen (`invoice_number`, `supplier`, `entity`,
+    `cost_center`, `message`) werden gegen CSV-Formelinjektion (CWE-1236)
+    abgesichert: Beginnt eine Textzelle mit `=`, `+`, `-`, `@`, Tabulator oder
+    CR, erhält sie ein führendes Apostroph, damit Excel/LibreOffice sie als Text
+    statt als Formel/DDE-Payload interpretiert. Numerische Spalten bleiben
+    unverändert.
   - Die Web-Oberfläche zeigt in der Findings- und der Rechnungs-Sektion je einen
     Button **„Als CSV exportieren“**, der die aktuell gewählten Filter als
-    Query-Parameter an den jeweiligen Export-Endpunkt hängt.
+    Query-Parameter an den jeweiligen Export-Endpunkt hängt. Die Rechnungsliste
+    verwendet denselben Gesellschaftsfilter wie ihr Export.
 - **Betrieb:** `GET /healthz`, Dockerfile (linux/amd64 + linux/arm64), Helm-Chart
   unter `deploy/helm/rechnungs-abgleich-radar/`, nicht-root Ausführung,
   optionale persistente SQLite-Ablage.

@@ -520,6 +520,9 @@ function selectedReviewStatus() {
 function findingsFilters(reviewStatus, entities) {
   return { status: 'open', review_status: reviewStatus, entity: entities };
 }
+function invoiceFilters(entities) {
+  return { entity: entities };
+}
 function exportFindings() {
   const parts = ['status=open'];
   const review = selectedReviewStatus();
@@ -557,7 +560,9 @@ async function loadFindings() {
 }
 async function loadInvoices() {
   try {
-    const d = await api('/api/invoices' + buildListQuery(listState.invoices));
+    const d = await api('/api/invoices' + buildListQuery(Object.assign({}, listState.invoices, {
+      extra: invoiceFilters(selectedEntities()),
+    })));
     showListError('invoices', '');
     const rows = d.invoices.map(i => `<tr>
       <td>${esc(i.invoice_number)}</td>

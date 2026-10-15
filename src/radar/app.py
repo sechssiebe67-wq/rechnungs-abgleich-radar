@@ -76,17 +76,40 @@ INVOICE_EXPORT_COLUMNS = (
 )
 
 
+# Leading characters that spreadsheet programs may interpret as the start of a
+# formula or DDE payload. Neutralizing user-controlled text cells prevents CSV
+# formula injection (CWE-1236) when a download is opened in Excel/Calc.
+_CSV_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _csv_cell(value):
+    """Render a single CSV cell, neutralizing spreadsheet formula injection.
+
+    ``None`` becomes an empty field. User-controlled *strings* that start with a
+    formula-trigger character get a leading apostrophe, so Excel/LibreOffice
+    treat them as text instead of executing ``=...``/``+...``/``-...``/``@...``
+    or DDE payloads. Non-string values (the numeric columns from the database)
+    are written unchanged, so negative numbers keep their native representation.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str) and value[:1] in _CSV_FORMULA_PREFIXES:
+        return "'" + value
+    return value
+
+
 def _csv_bytes(header, rows) -> bytes:
     """Render ``rows`` as UTF-8 CSV with the given header and CRLF line endings.
 
     Uses the standard-library :mod:`csv` writer only, so the exports add no new
-    runtime dependency. ``None`` values are written as empty fields.
+    runtime dependency. ``None`` values are written as empty fields and
+    user-controlled text is neutralized against CSV formula injection.
     """
     buffer = io.StringIO()
     writer = csv.writer(buffer, lineterminator="\r\n")
     writer.writerow(header)
     for row in rows:
-        writer.writerow(["" if value is None else value for value in row])
+        writer.writerow([_csv_cell(value) for value in row])
     return buffer.getvalue().encode("utf-8")
 
 

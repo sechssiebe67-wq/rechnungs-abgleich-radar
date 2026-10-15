@@ -16,6 +16,7 @@ sys.path.insert(0, _HERE)
 from radar.app import (  # noqa: E402
     FINDING_EXPORT_COLUMNS,
     INVOICE_EXPORT_COLUMNS,
+    _csv_bytes,
 )
 from radar.models import Finding, Invoice, InvoiceItem, parse_date  # noqa: E402
 from test_api import ApiTestCase  # noqa: E402
@@ -221,6 +222,30 @@ class CsvExportTests(ApiTestCase):
         self.assertEqual(status, 200)
         self.assertEqual(payload["total_count"], 0)
         self.assertEqual(payload["invoices"], [])
+
+    def test_csv_bytes_neutralizes_formulas_but_keeps_numbers(self):
+        body = _csv_bytes(
+            ("text", "number"),
+            [("=1+1", -10.0), (None, "+x"), ("@cmd", "safe"), ("-cmd", 5)],
+        )
+        rows = self.parse_rows(body)
+        self.assertEqual(rows[1], ["'=1+1", "-10.0"])
+        self.assertEqual(rows[2], ["", "'+x"])
+        self.assertEqual(rows[3], ["'@cmd", "safe"])
+        self.assertEqual(rows[4], ["'-cmd", "5"])
+
+    def test_exports_neutralize_user_controlled_cells(self):
+        payload_invoice = "=cmd|'/C calc'!A0"
+        payload_supplier = '=HYPERLINK("http://x","c")'
+        self._seed(payload_invoice, supplier=payload_supplier, amounts=[10.0])
+
+        for path in ("/api/findings/export", "/api/invoices/export"):
+            _, _, body = self.raw_get(path)
+            rows = self.parse_rows(body)
+            columns = {name: index for index, name in enumerate(rows[0])}
+            data = rows[1]
+            self.assertEqual(data[columns["invoice_number"]], "'" + payload_invoice)
+            self.assertEqual(data[columns["supplier"]], "'" + payload_supplier)
 
     def test_dashboard_exposes_export_buttons(self):
         status, raw = self.request("GET", "/")

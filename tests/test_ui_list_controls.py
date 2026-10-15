@@ -203,6 +203,27 @@ class ClientQueryBuildingTests(unittest.TestCase):
     @unittest.skipUnless(
         shutil.which("node"), "node is required to exercise the JS helpers"
     )
+    def test_invoice_filters_carry_entity_selection(self):
+        source = _read_index()
+        program = (
+            _extract_function(source, "invoiceFilters")
+            + "\nprocess.stdout.write(JSON.stringify(["
+            + "invoiceFilters(['DE01', 'DE02']),"
+            + "invoiceFilters([])"
+            + "]));"
+        )
+        out = _run_js(program)
+        self.assertEqual(out[0]["entity"], ["DE01", "DE02"])
+        self.assertEqual(out[1]["entity"], [])
+
+    def test_invoice_list_and_export_share_the_entity_filter(self):
+        source = _read_index()
+        self.assertIn("extra: invoiceFilters(selectedEntities())", source)
+        self.assertIn("const entities = selectedEntities();", source)
+
+    @unittest.skipUnless(
+        shutil.which("node"), "node is required to exercise the JS helpers"
+    )
     def test_range_label_matches_count_and_total(self):
         source = _read_index()
         program = (

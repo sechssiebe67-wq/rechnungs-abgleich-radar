@@ -386,6 +386,13 @@ wie bei `GET /api/findings`, `?entity=`/`?cost_center=` wie bei
 CSV-Datei. Ein unbekannter `entity`-/`cost_center`-Wert ist keine Fehlbedienung
 und ergibt eine leere, aber gültige CSV (nur Kopfzeile).
 
+Da `invoice_number`, `supplier`, `entity`, `cost_center` und `message` aus
+Benutzereingaben stammen, werden Formel-Präfixe beim Export neutralisiert:
+Textzellen, die mit `=`, `+`, `-`, `@`, Tabulator oder CR beginnen, erhalten ein
+führendes Apostroph, damit Excel/LibreOffice sie als Text behandeln und keine
+Formel-/DDE-Payload ausführen (CSV-Formelinjektion, CWE-1236). Numerische
+Spalten (`amount`, `total_amount`, `id`, Zähler) bleiben unverändert.
+
 ```sh
 # Findings (offen, Gesellschaft DE01) als CSV herunterladen
 curl -sS -OJ 'http://localhost:8080/api/findings/export?status=open&entity=DE01'
@@ -403,7 +410,9 @@ curl -sS -i 'http://localhost:8080/api/findings/export?review_status=foo'
 Die Web-Oberfläche bietet in der Findings- und der Rechnungs-Sektion je einen
 Button **„Als CSV exportieren“**, der die aktuell gewählten Filter (Gesellschaft
 sowie in der Findings-Sektion den Prüfstatus) als Query-Parameter an den Export
-anhängt und die Datei herunterlädt.
+anhängt und die Datei herunterlädt. Die Rechnungsliste im Dashboard verwendet
+denselben Gesellschaftsfilter wie ihr Export, sodass die heruntergeladene Datei
+zur angezeigten Tabelle passt.
 
 ### CSV-Format für Rechnungsimport
 
