@@ -150,6 +150,30 @@ persistentem Speicher.
   ein Hinweis, und nur ohne Positionen wird die Tabelle ausgeblendet.
 - **Manuelles Feedback** pro Treffer (bestätigt / Fehlalarm) inkl. Precision-
   Kennzahl als Grundlage für die Nachjustierung.
+- **Kennzahlen mit Gesellschafts- und Kostenstellen-Filter** (`GET /api/stats`):
+  Der Einstiegspunkt der Controller zeigt nicht mehr nur einen globalen Satz
+  Zähler, sondern beantwortet direkt die erste Frage — *welche Gesellschaft oder
+  Kostenstelle treibt das Volumen?*.
+  - Der Endpoint akzeptiert die wiederholbaren Filter `?entity=` und
+    `?cost_center=` (UND-verknüpft wie der Digest, unbekannte Werte sind keine
+    Fehlbedienung).
+  - **Ohne Filter** liefert er exakt dasselbe JSON wie vor dieser Änderung
+    (dieselben Schlüssel und Werte: `invoices`, `findings`, `open_amount`,
+    `confirmed`, `false_alarm`, `precision`) — kein Aufrufer bricht.
+  - **Mit Filter** sind die flachen Zähler die Summen über die gefilterte
+    Rechnungsmenge, zusätzlich erscheinen zwei Aufschlüsselungsblöcke:
+    `entities` (eine Zeile je Gesellschaft) und `cost_centers` (eine Zeile je
+    Kostenstelle, leere Kostenstelle als `""`) mit derselben Feldstruktur
+    (`findings`, `confirmed`, `false_alarm`, `open`, `open_amount`,
+    `precision`), absteigend nach `open_amount`, bei Gleichstand aufsteigend
+    nach dem Gruppenschlüssel. Ein unbekannter Filterwert liefert `200` mit
+    genullten Zählern und leeren Blöcken. Die Blöcke nutzen die bestehenden
+    Aggregate; es kommen keine neuen Tabellen oder Spalten hinzu.
+  - Die Web-Oberfläche bietet in der KPI-Sektion eine Gesellschafts- und eine
+    Kostenstellen-Mehrfachauswahl, lädt `/api/stats` mit den gewählten Filtern
+    neu und zeigt die Tabellen „Gesellschaften“ und „Kostenstellen“; bei `400`
+    erscheint eine sichtbare Fehlermeldung, ohne die zuletzt geladene Ansicht
+    zu verwerfen.
 - **Precision pro Lieferant** (`GET /api/stats/by-supplier`): Findings,
   bestätigte Treffer, Fehlalarme, offenes Abweichungsvolumen und daraus
   abgeleitete Precision je Lieferant — inklusive der angewendeten
@@ -375,7 +399,10 @@ zeigt im Concierge-Test, welche Artikel und Positionen — auch bei Rechnungen
 mit vielen Zeilen — das Abweichungsvolumen einer einzelnen Rechnung treiben und
 wo sich Regelprofile oder Bezeichnungs-Normalisierung gezielt ansetzen lassen.
 Die Feedback- und Digest-Funktionen dieses Inkrements liefern dafür die
-Messgrößen.
+Messgrößen. Die **Kennzahlen-Aufschlüsselung** (`GET /api/stats` mit
+`?entity=`/`?cost_center=`, Blöcke `entities`/`cost_centers`) beantwortet dabei
+direkt die erste Controller-Frage — *welche Gesellschaft oder Kostenstelle das
+Volumen treibt* — ohne die Dashboard-Seite zu verlassen.
 
 Der **Digest-Versand** unterstützt den Concierge-Test direkt: Der Wochen-Digest
 wird den Testkunden per Webhook/SMTP aktiv zugestellt (statt manuellem Abruf),

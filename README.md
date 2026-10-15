@@ -62,7 +62,7 @@ python3 -m unittest discover -s tests -v
 | --- | --- |
 | `GET /healthz` | Health-Probe |
 | `GET /` | Web-Oberfläche |
-| `GET /api/stats` | Kennzahlen inkl. Precision aus Feedback |
+| `GET /api/stats` | Kennzahlen inkl. Precision aus Feedback; optional je Gesellschaft und Kostenstelle aufgeschlüsselt (`?entity=`, `?cost_center=`) |
 | `GET /api/stats/by-supplier` | Precision, Findings und offenes Volumen je Lieferant inkl. angewendeter Regeln (`?entity=`) |
 | `GET /api/stats/rule-impact` | Vorher/Nachher-Vergleich der Findings und Precision je Lieferant vor/nach dem letzten Regel-Update (`?entity=`) |
 | `GET /api/stats/roi` | ROI-Nachweis: vermiedener Prüfaufwand und vermiedene Fehlzahlungen aus dem Feedback, je Lieferant, je Gesellschaft, je Artikel und gesamt (`?review_minutes=`, `?hourly_rate=`, `?article_limit=`, `?entity=`) |
@@ -85,6 +85,66 @@ python3 -m unittest discover -s tests -v
 | `POST /api/findings/:id/feedback` | `{"verdict": "confirmed"|"false_alarm"}` |
 | `GET /api/digest/weekly[.html]?entity=&cost_center=` | Wöchentlicher Digest als JSON/HTML, optional auf Gesellschaften und Kostenstellen gefiltert (UND-verknüpft) |
 | `POST /api/digest/weekly/send` | Digest aktiv per Webhook/SMTP zustellen (`{"entities": ["DE01"], "cost_centers": ["KST-100"]}`), liefert je Kanal `sent`/`skipped`/`error` |
+
+### Kennzahlen je Gesellschaft und Kostenstelle
+
+`GET /api/stats` ist der Einstiegspunkt der Controller. Er liefert ohne
+Query-Parameter **unverändert** die globale Kennzahlenmenge
+(`invoices`, `findings`, `open_amount`, `confirmed`, `false_alarm`,
+`precision`) — dieselben Schlüssel und Werte wie bisher. Mit den wiederholbaren
+Filtern `?entity=` und `?cost_center=` (UND-verknüpft, wie der Digest) werden
+diese flachen Zähler über die **gefilterte Rechnungsmenge** gebildet und die
+Antwort um zwei Aufschlüsselungsblöcke ergänzt:
+
+| Block | Schlüssel | Felder |
+| --- | --- | --- |
+| `entities` | `entity` | `findings`, `confirmed`, `false_alarm`, `open`, `open_amount`, `precision` |
+| `cost_centers` | `cost_center` (leer als `""`) | `findings`, `confirmed`, `false_alarm`, `open`, `open_amount`, `precision` |
+
+Beide Listen sind absteigend nach `open_amount` und bei Gleichstand aufsteigend
+nach dem Gruppenschlüssel sortiert. Die Summe von `open_amount` bzw. `findings`
+über die Blöcke entspricht exakt dem jeweiligen flachen Zähler. Ein unbekannter
+Filterwert ist **keine Fehlbedienung**: Der Endpoint antwortet `200` mit
+genullten Zählern und leeren `entities`/`cost_centers`-Listen.
+
+```sh
+# Unverändert: nur die globalen Kennzahlen
+curl -sS http://localhost:8080/api/stats
+
+# Nur DE01, zusätzlich Aufschlüsselung nach DE01 und dessen Kostenstellen
+curl -sS 'http://localhost:8080/api/stats?entity=DE01'
+
+# UND-verknüpft: nur Rechnungen von DE01 mit Kostenstelle KST-100
+curl -sS 'http://localhost:8080/api/stats?entity=DE01&cost_center=KST-100'
+
+# Unbekannter Filter -> 200 mit leeren Blöcken und Nullwerten
+curl -sS 'http://localhost:8080/api/stats?entity=UNKNOWN'
+```
+
+```json
+{
+  "invoices": 2,
+  "findings": 2,
+  "open_amount": 20.0,
+  "confirmed": 1,
+  "false_alarm": 0,
+  "precision": 1.0,
+  "entities": [
+    {"entity": "DE01", "findings": 2, "confirmed": 1, "false_alarm": 0, "open": 1, "open_amount": 20.0, "precision": 1.0}
+  ],
+  "cost_centers": [
+    {"cost_center": "KST-200", "findings": 1, "confirmed": 0, "false_alarm": 0, "open": 1, "open_amount": 20.0, "precision": null},
+    {"cost_center": "KST-100", "findings": 1, "confirmed": 1, "false_alarm": 0, "open": 0, "open_amount": 0.0, "precision": 1.0}
+  ]
+}
+```
+
+Die Web-Oberfläche bietet in der Sektion „Kennzahlen“ je eine
+Gesellschafts- und eine Kostenstellen-Mehrfachauswahl, lädt `/api/stats` mit den
+gewählten Filtern neu und zeigt die Tabellen „Gesellschaften“ und
+„Kostenstellen“ (Findings, bestätigt, Fehlalarm, offen, offenes Volumen,
+Precision). Bei einem `400` erscheint eine sichtbare Fehlermeldung, ohne die
+zuletzt geladene Ansicht zu verwerfen.
 
 ### Gesellschaften (Multi-Gesellschafts-Rollup)
 

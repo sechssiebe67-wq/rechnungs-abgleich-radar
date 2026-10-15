@@ -253,7 +253,16 @@ class RadarHandler(BaseHTTPRequestHandler):
         self._send_json({"status": "ok", "version": __version__})
 
     def h_stats(self, params, query) -> None:
-        self._send_json(self.store.stats())
+        entities = _query_list(query, "entity") or None
+        cost_centers = _query_list(query, "cost_center") or None
+        stats = self.store.stats(self.settings, entities, cost_centers)
+        if not entities and not cost_centers:
+            # Preserve the pre-breakdown response byte-for-byte: the flat
+            # counters equal the historical values, the grouped blocks are only
+            # exposed once a filter is requested.
+            stats.pop("entities", None)
+            stats.pop("cost_centers", None)
+        self._send_json(stats)
 
     def h_stats_by_supplier(self, params, query) -> None:
         entities = _query_list(query, "entity") or None
