@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from datetime import date
 from typing import Iterator, List, Optional
 
+from .config import Settings, effective_rule
 from .models import (
     Finding,
     Invoice,
@@ -503,3 +504,51 @@ class Store:
             "false_alarm": false_alarm,
             "precision": round(precision, 4) if precision is not None else None,
         }
+
+    def stats_by_supplier(self, settings: Optional[Settings] = None) -> List[dict]:
+        """Per-supplier breakdown of findings, feedback and applied thresholds.
+
+        Returns one entry per known supplier, sorted by open deviation volume
+        (descending) and then by supplier name. Suppliers without findings are
+        included with zeros and ``precision: null``. ``applied_rule`` mirrors
+        :func:`radar.config.effective_rule` so callers can see which supplier
+        overrides were in effect without a second request.
+        """
+        base = settings or Settings()
+        with self.connect() as conn:
+            rows = conn.execute(
+                """SELECT s.name AS supplier,
+                          COUNT(f.id) AS findings,
+                          COALESCE(SUM(CASE WHEN f.feedback = 'confirmed'
+                                            THEN 1 ELSE 0 END), 0) AS confirmed,
+                          COALESCE(SUM(CASE WHEN f.feedback = 'false_alarm'
+                                            THEN 1 ELSE 0 END), 0) AS false_alarm,
+                          COALESCE(SUM(CASE WHEN f.status = 'open'
+                                            THEN f.amount ELSE 0 END), 0) AS open_amount
+                   FROM suppliers s
+                   LEFT JOIN invoices i ON i.supplier = s.name
+                   LEFT JOIN findings f ON f.invoice_id = i.id
+                   GROUP BY s.name"""
+            ).fetchall()
+
+        results: List[dict] = []
+        for row in rows:
+            supplier = row["supplier"]
+            confirmed = int(row["confirmed"])
+            false_alarm = int(row["false_alarm"])
+            reviewed = confirmed + false_alarm
+            precision = (confirmed / reviewed) if reviewed else None
+            rule = self.get_supplier_rule(supplier)
+            results.append(
+                {
+                    "supplier": supplier,
+                    "findings": int(row["findings"]),
+                    "confirmed": confirmed,
+                    "false_alarm": false_alarm,
+                    "open_amount": round(float(row["open_amount"]), 2),
+                    "precision": round(precision, 4) if precision is not None else None,
+                    "applied_rule": effective_rule(base, rule),
+                }
+            )
+        results.sort(key=lambda entry: (-entry["open_amount"], entry["supplier"]))
+        return results

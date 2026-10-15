@@ -56,6 +56,13 @@ persistentem Speicher.
   was abwich (Referenzwert, Ist-Wert, Betrag, Begründung).
 - **Manuelles Feedback** pro Treffer (bestätigt / Fehlalarm) inkl. Precision-
   Kennzahl als Grundlage für die Nachjustierung.
+- **Precision pro Lieferant** (`GET /api/stats/by-supplier`): Findings,
+  bestätigte Treffer, Fehlalarme, offenes Abweichungsvolumen und daraus
+  abgeleitete Precision je Lieferant — inklusive der angewendeten
+  Regel-Schwellen und ihrer Herkunft (`supplier`/`global`) als `applied_rule`.
+  Die Web-Oberfläche zeigt die nach offenem Volumen sortierte Tabelle an und
+  macht so sichtbar, ob ein Lieferanten-Regelprofil die Fehlalarme dieses
+  Lieferanten reduziert.
 - **Wöchentlicher Digest** als E-Mail-fähiger HTML-Report und als JSON.
 - **Betrieb:** `GET /healthz`, Dockerfile (linux/amd64 + linux/arm64), Helm-Chart
   unter `deploy/helm/rechnungs-abgleich-radar/`, nicht-root Ausführung,
@@ -76,7 +83,11 @@ priorisiert die Freigabe-Entscheidung.
    **Umgesetzt:** Lieferanten-Regelprofile inkl. Freibetrag über
    `/api/supplier-rules` pflegbar.
 4. Versand des Digests per SMTP/Webhook und Rollup über mehrere Gesellschaften.
-5. Auswertung vermiedener Beträge (ROI-Nachweis) für den Preistest.
+5. Auswertung vermiedener Beträge (ROI-Nachweis) für den Preistest. Als
+   Zwischenschritt ist die **lieferantenbezogene Precision** über
+   `GET /api/stats/by-supplier` bereits verfügbar und zeigt, ob ein
+   Regelprofil die Fehlalarme eines Lieferanten reduziert; der ROI-Nachweis
+   baut darauf auf.
 
 ## Validation plan (Bezug zur Produkthypothese)
 

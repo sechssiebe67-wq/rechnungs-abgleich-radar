@@ -164,6 +164,10 @@ class RadarHandler(BaseHTTPRequestHandler):
     def h_stats(self, params, query) -> None:
         self._send_json(self.store.stats())
 
+    def h_stats_by_supplier(self, params, query) -> None:
+        suppliers = self.store.stats_by_supplier(self.settings)
+        self._send_json({"suppliers": suppliers, "count": len(suppliers)})
+
     def h_suppliers(self, params, query) -> None:
         self._send_json({"suppliers": self.store.list_suppliers()})
 
@@ -341,6 +345,7 @@ def build_router() -> Router:
     router.add("GET", "/healthz", RadarHandler.h_healthz)
     router.add("HEAD", "/healthz", RadarHandler.h_healthz)
     router.add("GET", "/api/stats", RadarHandler.h_stats)
+    router.add("GET", "/api/stats/by-supplier", RadarHandler.h_stats_by_supplier)
     router.add("GET", "/api/suppliers", RadarHandler.h_suppliers)
     router.add("POST", "/api/suppliers", RadarHandler.h_add_supplier)
     router.add("GET", "/api/supplier-rules", RadarHandler.h_supplier_rules)

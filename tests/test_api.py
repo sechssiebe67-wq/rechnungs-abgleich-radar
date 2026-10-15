@@ -248,6 +248,146 @@ class SupplierRuleApiTests(ApiTestCase):
         self.assertEqual(payload["count"], 2)
 
 
+class SupplierPrecisionTests(ApiTestCase):
+    def _po(self, supplier, po_number, unit_price=0.40):
+        status, _ = self.json_request(
+            "POST",
+            "/api/purchase-orders",
+            {
+                "po_number": po_number,
+                "supplier": supplier,
+                "items": [
+                    {"article": "Schraube M8", "quantity": 100, "unit_price": unit_price}
+                ],
+            },
+        )
+        self.assertEqual(status, 201)
+
+    def _invoice(self, supplier, po_number, number, unit_price):
+        status, payload = self.json_request(
+            "POST",
+            "/api/invoices",
+            {
+                "invoice_number": number,
+                "supplier": supplier,
+                "invoice_date": "2026-01-15",
+                "po_number": po_number,
+                "items": [
+                    {"article": "Schraube M8", "quantity": 100, "unit_price": unit_price}
+                ],
+            },
+        )
+        self.assertEqual(status, 201)
+        return payload
+
+    def test_endpoint_shape_and_sorting(self):
+        self._po("Beta AG", "PO-2")
+        self._po("ACME GmbH", "PO-1")
+        self._po("Zeta AG", "PO-3")
+        self._invoice("Beta AG", "PO-2", "RE-B", 0.60)
+        self._invoice("ACME GmbH", "PO-1", "RE-A", 0.50)
+        self._invoice("Zeta AG", "PO-3", "RE-Z", 0.40)
+
+        status, payload = self.json_request("GET", "/api/stats/by-supplier")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["count"], len(payload["suppliers"]))
+        for entry in payload["suppliers"]:
+            for field in (
+                "supplier",
+                "findings",
+                "confirmed",
+                "false_alarm",
+                "open_amount",
+                "precision",
+                "applied_rule",
+            ):
+                self.assertIn(field, entry)
+
+        names = [entry["supplier"] for entry in payload["suppliers"]]
+        self.assertEqual(names, ["Beta AG", "ACME GmbH", "Zeta AG"])
+        self.assertEqual(payload["suppliers"][-1]["open_amount"], 0.0)
+
+    def test_sorting_ties_break_alphabetically(self):
+        self._po("Zeta AG", "PO-Z")
+        self._po("Alpha GmbH", "PO-A")
+        self._invoice("Zeta AG", "PO-Z", "RE-Z", 0.50)
+        self._invoice("Alpha GmbH", "PO-A", "RE-A", 0.50)
+
+        _, payload = self.json_request("GET", "/api/stats/by-supplier")
+        names = [entry["supplier"] for entry in payload["suppliers"]]
+        self.assertEqual(names, ["Alpha GmbH", "Zeta AG"])
+
+    def test_precision_semantics(self):
+        self._po("Confirmed GmbH", "PO-C")
+        self._po("False GmbH", "PO-F")
+        self._po("Open GmbH", "PO-O")
+        confirmed = self._invoice("Confirmed GmbH", "PO-C", "RE-C", 0.50)
+        false = self._invoice("False GmbH", "PO-F", "RE-F", 0.50)
+        self._invoice("Open GmbH", "PO-O", "RE-O", 0.50)
+
+        self.json_request(
+            "POST",
+            "/api/findings/%d/feedback" % confirmed["findings"][0],
+            {"verdict": "confirmed"},
+        )
+        self.json_request(
+            "POST",
+            "/api/findings/%d/feedback" % false["findings"][0],
+            {"verdict": "false_alarm"},
+        )
+
+        _, payload = self.json_request("GET", "/api/stats/by-supplier")
+        by_name = {entry["supplier"]: entry for entry in payload["suppliers"]}
+        self.assertEqual(by_name["Confirmed GmbH"]["precision"], 1.0)
+        self.assertEqual(by_name["Confirmed GmbH"]["confirmed"], 1)
+        self.assertEqual(by_name["False GmbH"]["precision"], 0.0)
+        self.assertEqual(by_name["False GmbH"]["false_alarm"], 1)
+        self.assertIsNone(by_name["Open GmbH"]["precision"])
+
+    def test_supplier_without_findings(self):
+        status, _ = self.json_request(
+            "POST", "/api/suppliers", {"name": "Leer GmbH"}
+        )
+        self.assertEqual(status, 201)
+
+        _, payload = self.json_request("GET", "/api/stats/by-supplier")
+        entry = next(e for e in payload["suppliers"] if e["supplier"] == "Leer GmbH")
+        self.assertEqual(entry["findings"], 0)
+        self.assertEqual(entry["confirmed"], 0)
+        self.assertEqual(entry["false_alarm"], 0)
+        self.assertEqual(entry["open_amount"], 0.0)
+        self.assertIsNone(entry["precision"])
+
+    def test_applied_rule_tracks_supplier_override_and_delete(self):
+        self._po("ACME GmbH", "PO-77")
+        self._invoice("ACME GmbH", "PO-77", "RE-77", 0.50)
+        self.json_request(
+            "POST", "/api/supplier-rules", {"supplier": "ACME GmbH", "tolerance_pct": 1.0}
+        )
+
+        _, payload = self.json_request("GET", "/api/stats/by-supplier")
+        entry = next(e for e in payload["suppliers"] if e["supplier"] == "ACME GmbH")
+        self.assertEqual(
+            entry["applied_rule"]["tolerance_pct"], {"value": 1.0, "source": "supplier"}
+        )
+
+        status, _ = self.json_request("DELETE", "/api/supplier-rules/ACME%20GmbH")
+        self.assertEqual(status, 200)
+
+        _, payload = self.json_request("GET", "/api/stats/by-supplier")
+        entry = next(e for e in payload["suppliers"] if e["supplier"] == "ACME GmbH")
+        self.assertEqual(
+            entry["applied_rule"]["tolerance_pct"], {"value": 2.0, "source": "global"}
+        )
+
+    def test_dashboard_renders_supplier_precision_section(self):
+        status, raw = self.request("GET", "/")
+        self.assertEqual(status, 200)
+        self.assertIn("Precision pro Lieferant", raw)
+        self.assertIn("supplier-precision", raw)
+        self.assertIn("/api/stats/by-supplier", raw)
+
+
 class AuthTests(ApiTestCase):
     token = "geheim"
 

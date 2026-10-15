@@ -50,6 +50,7 @@ python3 -m unittest discover -s tests -v
 | `GET /healthz` | Health-Probe |
 | `GET /` | Web-Oberfläche |
 | `GET /api/stats` | Kennzahlen inkl. Precision aus Feedback |
+| `GET /api/stats/by-supplier` | Precision, Findings und offenes Volumen je Lieferant inkl. angewendeter Regeln |
 | `POST /api/suppliers` | Lieferant anlegen |
 | `GET /api/supplier-rules` | Liste aller Lieferanten-Regeln |
 | `GET /api/supplier-rules/:supplier` | Einzelne Regel oder `404` |
@@ -107,6 +108,24 @@ curl -sS -X DELETE http://localhost:8080/api/supplier-rules/ACME%20GmbH
 
 Die effektiv verwendeten Schwellen inklusive Herkunft (`supplier` vs. `global`)
 stehen in der Audit-Ansicht `GET /api/invoices/:id` im Feld `applied_rule`.
+
+### Precision pro Lieferant
+
+`GET /api/stats/by-supplier` liefert je Lieferant die Anzahl Findings, die
+bestätigten Treffer, die Fehlalarme, das offene Abweichungsvolumen und die
+daraus abgeleitete Precision — inklusive der angewendeten Regel-Schwellen
+(inkl. Herkunft `supplier`/`global`) im Feld `applied_rule`. Die Liste ist
+absteigend nach offenem Volumen sortiert.
+
+Die Kennzahl macht datenbasiert sichtbar, ob ein Lieferanten-Regelprofil
+(Toleranz, Drift-Schwelle, Freibetrag) die Fehlalarme dieses Lieferanten
+tatsächlich reduziert: Steigt die Precision nach dem Nachjustieren, wirkt die
+Regel; bleibt sie niedrig, ist die Regel zu unscharf. So lassen sich die
+Regelprofile gezielt statt pauschal nachziehen.
+
+```sh
+curl -sS http://localhost:8080/api/stats/by-supplier
+```
 
 ## Deployment
 
