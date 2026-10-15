@@ -281,6 +281,36 @@ class AuditGroupingTests(unittest.TestCase):
             ):
                 self.assertIn(field, item)
 
+    def test_items_include_clean_positions(self):
+        store, settings = seeded_store()
+        invoice_id = store.add_invoice(
+            make_invoice(
+                "RE-CLEAN",
+                "ACME GmbH",
+                [
+                    dict(position=1, article="Schraube M8", quantity=100, unit_price=0.50),
+                    dict(position=2, article="Mutter M8", quantity=50, unit_price=0.10),
+                ],
+                po_number="PO-77",
+            )
+        )
+        reconcile_invoice(store, invoice_id, settings)
+        audit = invoice_audit(store, invoice_id, settings)
+
+        # Every compared position is listed, including the clean one.
+        self.assertEqual(len(audit["items"]), 2)
+        clean = next(item for item in audit["items"] if item["position"] == 2)
+        self.assertEqual(clean["article"], "Mutter M8")
+        self.assertEqual(clean["findings"], [])
+        self.assertEqual(clean["finding_count"], 0)
+        self.assertEqual(clean["finding_types"], [])
+        self.assertAlmostEqual(clean["amount"], 0.0, places=2)
+        self.assertAlmostEqual(
+            round(sum(item["amount"] for item in audit["items"]), 2),
+            audit["items_total_amount"],
+            places=2,
+        )
+
     def test_findings_without_position_are_grouped(self):
         store, settings = seeded_store()
         invoice_id = store.add_invoice(

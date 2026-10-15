@@ -434,14 +434,17 @@ async function loadAudit() {
     error.textContent = '';
     const items = d.items || [];
     const invoice = d.invoice || {};
+    const hasFindings = (d.findings || []).length > 0;
     summary.textContent = `Rechnung ${invoice.invoice_number || id} · ${invoice.supplier || ''} · Abweichungsvolumen ${money(d.items_total_amount || 0)}`;
     if (!items.length) {
-      hint.textContent = 'Keine Findings für diese Rechnung — keine Positionen zu gruppieren.';
+      hint.textContent = 'Keine Rechnungspositionen vorhanden.';
       table.style.display = 'none';
       tbody.innerHTML = '';
       return;
     }
-    hint.textContent = '';
+    hint.textContent = hasFindings
+      ? ''
+      : 'Keine Findings für diese Rechnung — alle Positionen im Toleranzbereich.';
     table.style.display = '';
     tbody.innerHTML = items.map(item => `<tr>
       <td>${esc(item.article)}</td>

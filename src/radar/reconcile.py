@@ -249,7 +249,6 @@ def invoice_audit(
         key = finding.get("invoice_item_id")
         by_item.setdefault(key, []).append(finding)
 
-    line_items = {row["id"]: row for row in store.invoice_items(invoice_id)}
     po = store.get_purchase_order(invoice.po_number) if invoice.po_number else None
     po_prices = {}
     if po is not None:
@@ -267,36 +266,40 @@ def invoice_audit(
             return reference.unit_price, reference.source
         return None, None
 
-    # One group per article/position that actually carries findings, so the
-    # list stays a "grouping of the findings" (and stays empty when the invoice
-    # has no findings). Existing item fields (e.g. ``reference_price``) are
-    # carried over for groups that map to a real invoice position.
+    # One entry per invoice line item, so the audit keeps enumerating every
+    # compared position: clean positions carry an empty ``findings`` list and a
+    # zeroed summary. Unmatched findings (``missing_po``, ``duplicate``) are
+    # appended as a single ``(ohne Position)`` group.
     items = []
-    for group_findings in by_item.values():
-        row = line_items.get(group_findings[0].get("invoice_item_id"))
-        if row is None:
-            item = {
-                "position": None,
-                "article": NO_POSITION_LABEL,
-                "quantity": None,
-                "unit_price": None,
-                "line_total": None,
-                "reference_price": None,
-                "reference_source": None,
-            }
-        else:
-            reference_price, reference_source = _reference(row)
-            item = {
-                "position": row["position"],
-                "article": row["article"],
-                "quantity": row["quantity"],
-                "unit_price": row["unit_price"],
-                "line_total": round(row["quantity"] * row["unit_price"], 2),
-                "reference_price": reference_price,
-                "reference_source": reference_source,
-            }
-        item["findings"] = group_findings
+    for row in store.invoice_items(invoice_id):
+        group_findings = by_item.get(row["id"], [])
+        reference_price, reference_source = _reference(row)
+        item = {
+            "position": row["position"],
+            "article": row["article"],
+            "quantity": row["quantity"],
+            "unit_price": row["unit_price"],
+            "line_total": round(row["quantity"] * row["unit_price"], 2),
+            "reference_price": reference_price,
+            "reference_source": reference_source,
+            "findings": group_findings,
+        }
         item.update(_group_summary(group_findings))
+        items.append(item)
+
+    unmatched = by_item.get(None, [])
+    if unmatched:
+        item = {
+            "position": None,
+            "article": NO_POSITION_LABEL,
+            "quantity": None,
+            "unit_price": None,
+            "line_total": None,
+            "reference_price": None,
+            "reference_source": None,
+            "findings": unmatched,
+        }
+        item.update(_group_summary(unmatched))
         items.append(item)
 
     items.sort(
@@ -308,7 +311,6 @@ def invoice_audit(
         )
     )
     items_total_amount = round(sum(float(f["amount"]) for f in findings), 2)
-    unmatched = by_item.get(None, [])
 
     return {
         "invoice": {

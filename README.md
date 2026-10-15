@@ -176,24 +176,28 @@ curl -sS 'http://localhost:8080/api/supplier-rules'
 
 `GET /api/invoices/:id` liefert neben der bisherigen Einzelvergleichs-Liste
 (`invoice`, `findings`, `applied_rule`, …) die zusätzlichen Felder `items` und
-`items_total_amount`. `items` gruppiert die Findings je Rechnungsposition nach
-Artikel/Position und macht so auch bei Rechnungen mit vielen Zeilen sichtbar,
-welcher Artikel das Abweichungsvolumen treibt.
+`items_total_amount`. `items` listet jede verglichene Rechnungsposition mit
+ihren Findings auf und macht so auch bei Rechnungen mit vielen Zeilen sichtbar,
+was verglichen wurde und welcher Artikel das Abweichungsvolumen treibt.
 
 - `items_total_amount`: Summe der `amount`-Felder **aller** Findings der
   Rechnung, auf zwei Nachkommastellen gerundet.
-- Jede Gruppe in `items` enthält `article` (Anzeigename aus der
+- Jeder Eintrag in `items` enthält `article` (Anzeigename aus der
   Rechnungsposition), `position` (Integer oder `null`), `finding_count`,
   `amount` (Summe der Finding-Beträge der Gruppe), `finding_types` (sortiert und
   dedupliziert) sowie `findings` (die zugehörigen Findings mit `id`,
   `finding_type`, `amount`, `message`).
-- Findings ohne Position (`missing_po`, `duplicate`) laufen unter
-  `article == "(ohne Position)"` mit `position == null`.
-- Gruppen, die zu einer echten Rechnungsposition gehören, tragen weiterhin die
-  bisherigen Vergleichsfelder `quantity`, `unit_price`, `line_total`,
-  `reference_price` und `reference_source`; ohne Findings ist `items` leer.
+- Pro Rechnungsposition wird **ein** Eintrag ausgegeben — auch für saubere
+  Positionen ohne Findings (`findings == []`, `finding_count == 0`,
+  `amount == 0.0`, `finding_types == []`). Aufrufer können `items` daher weiter
+  als vollständige Liste der verglichenen Positionen auswerten.
+- Findings ohne Position (`missing_po`, `duplicate`) laufen zusätzlich in genau
+  einer Gruppe unter `article == "(ohne Position)"` mit `position == null`.
+- Positions-Einträge tragen weiterhin die bisherigen Vergleichsfelder
+  `quantity`, `unit_price`, `line_total`, `reference_price` und
+  `reference_source`.
 - Die Liste ist absteigend nach `amount` sortiert, bei Gleichstand aufsteigend
-  nach `article`.
+  nach `article`; saubere Positionen (Betrag `0.0`) stehen am Ende.
 - Die bisherigen Felder (`invoice`, `findings`, `applied_rule`, …) bleiben
   unverändert; `items` und `items_total_amount` sind ergänzend und brechen keine
   bestehenden Aufrufer. Es kommen keine neuen Tabellen, Endpunkte oder
@@ -242,8 +246,10 @@ curl -sS http://localhost:8080/api/invoices/1
 
 Die Web-Oberfläche zeigt die Sektion „Rechnungs-Audit“ mit der Tabelle
 „Positionen“ (Artikel, Position, Anzahl Findings, Abweichungsbetrag in EUR,
-Finding-Typen) und einem „Audit“-Button je Rechnung; ohne Findings erscheint ein
-Hinweis statt einer leeren Tabelle.
+Finding-Typen) und einem „Audit“-Button je Rechnung. Die Tabelle listet alle
+verglichenen Positionen (saubere Positionen mit `0` Findings und `0,00 EUR`);
+hat die Rechnung keine Findings, erscheint zusätzlich ein Hinweis, und nur wenn
+gar keine Positionen existieren, wird die Tabelle ausgeblendet.
 
 ### CSV-Format für Rechnungsimport
 

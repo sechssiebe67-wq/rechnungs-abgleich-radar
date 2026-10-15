@@ -128,21 +128,26 @@ persistentem Speicher.
 - **Nachvollziehbarkeit:** Audit-Ansicht pro Rechnung — was verglichen wurde und
   was abwich (Referenzwert, Ist-Wert, Betrag, Begründung).
 - **Findings je Artikel/Position gruppiert** (`GET /api/invoices/:id`): Die
-  Audit-Antwort liefert zusätzlich die Felder `items` (Gruppen) und
-  `items_total_amount` (Abweichungsvolumen der Rechnung). Jede Gruppe bündelt
-  die Findings einer Rechnungsposition mit `article` (Anzeigename), `position`
-  (Integer oder `null`), `finding_count`, `amount` (Summe der Finding-Beträge),
-  `finding_types` (sortiert, dedupliziert) und `findings` (die zugehörigen
-  Findings mit `id`, `finding_type`, `amount`, `message`). Findings ohne Position
-  (`missing_po`, `duplicate`) laufen unter `article == "(ohne Position)"`. Die
+  Audit-Antwort liefert zusätzlich die Felder `items` (Liste je
+  Rechnungsposition) und `items_total_amount` (Abweichungsvolumen der Rechnung).
+  Jeder Eintrag bündelt die Findings einer Rechnungsposition mit `article`
+  (Anzeigename), `position` (Integer oder `null`), `finding_count`, `amount`
+  (Summe der Finding-Beträge), `finding_types` (sortiert, dedupliziert) und
+  `findings` (die zugehörigen Findings mit `id`, `finding_type`, `amount`,
+  `message`). Es wird **eine Zeile pro verglichener Rechnungsposition**
+  ausgegeben — auch für saubere Positionen ohne Findings (`finding_count == 0`,
+  `amount == 0.0`), damit `items` weiterhin alle verglichenen Positionen
+  widerspiegelt. Findings ohne Position (`missing_po`, `duplicate`) laufen
+  zusätzlich in genau einer Gruppe unter `article == "(ohne Position)"`. Die
   Liste ist absteigend nach `amount`, bei Gleichstand aufsteigend nach `article`
-  sortiert. Damit ist bei Rechnungen mit vielen Positionen (z. B. 40 Zeilen)
-  erkennbar, welche Positionen zusammengehören und welcher Artikel das
-  Abweichungsvolumen treibt — ohne neue Tabellen, Endpunkte oder
-  Laufzeit-Abhängigkeiten. Die bisherigen Felder (`invoice`, `findings`,
-  `applied_rule`, …) bleiben unverändert. Die Web-Oberfläche zeigt in der
-  Audit-Ansicht die Tabelle „Positionen“; ohne Findings erscheint ein Hinweis
-  statt einer leeren Tabelle.
+  sortiert (saubere Positionen mit `0.0` am Ende). Damit ist bei Rechnungen mit
+  vielen Positionen (z. B. 40 Zeilen) erkennbar, was verglichen wurde, welche
+  Positionen zusammengehören und welcher Artikel das Abweichungsvolumen treibt —
+  ohne neue Tabellen, Endpunkte oder Laufzeit-Abhängigkeiten. Die bisherigen
+  Felder (`invoice`, `findings`, `applied_rule`, …) bleiben unverändert. Die
+  Web-Oberfläche zeigt in der Audit-Ansicht die Tabelle „Positionen“ mit allen
+  verglichenen Positionen; hat die Rechnung keine Findings, erscheint zusätzlich
+  ein Hinweis, und nur ohne Positionen wird die Tabelle ausgeblendet.
 - **Manuelles Feedback** pro Treffer (bestätigt / Fehlalarm) inkl. Precision-
   Kennzahl als Grundlage für die Nachjustierung.
 - **Precision pro Lieferant** (`GET /api/stats/by-supplier`): Findings,
@@ -317,9 +322,10 @@ priorisiert die Freigabe-Entscheidung.
    nächster Ausbauschritt sind OCR-/PDF-Extraktion und das Fuzzy-Matching
    uneinheitlicher Bezeichnungen (Punkte 1 und 2).
 7. **Findings je Artikel/Position gruppiert — umgesetzt.** Die Audit-Antwort
-   `GET /api/invoices/:id` liefert jetzt `items` (Gruppen je Artikel/Position,
-   inklusive `(ohne Position)`) und `items_total_amount`; die Web-Oberfläche
-   zeigt dazu die Sektion „Positionen“. Der verbleibende nächste Schritt ist
+   `GET /api/invoices/:id` liefert jetzt `items` (eine Zeile je
+   Rechnungsposition, inklusive sauberer Positionen, plus `(ohne Position)` für
+   Findings ohne Position) und `items_total_amount`; die Web-Oberfläche zeigt
+   dazu die Sektion „Positionen“. Der verbleibende nächste Schritt ist
    damit klar umrissen: **Fuzzy-Matching uneinheitlicher Bezeichnungen** (mit
    Lernschleife aus dem Feedback, damit gleiche Artikel unter verschiedenen
    Schreibweisen als eine Gruppe erscheinen) und **OCR-/PDF-Extraktion** (damit
