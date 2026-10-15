@@ -71,6 +71,25 @@ persistentem Speicher.
   (`applied_rule`). Die Web-Oberfläche zeigt die Sektion „Regel-Wirkung“ und
   macht datenbasiert nachweisbar, ob ein Regelprofil (Toleranz, Drift-Schwelle,
   Freibetrag) die Fehlalarme eines Lieferanten tatsächlich reduziert.
+- **ROI-Nachweis** (`GET /api/stats/roi`): übersetzt die akkumulierte
+  lieferantenbezogene Precision in einen konkreten, belastbaren Wert für den
+  Preistest — vermiedener Prüfaufwand und vermiedene Fehlzahlungen. Eingaben
+  sind die Findings inkl. Feedback sowie zwei Annahmen
+  (`RADAR_REVIEW_MINUTES_PER_FINDING`, Default `4.0`, und
+  `RADAR_REVIEW_HOURLY_RATE_EUR`, Default `45.0`). Formel je Lieferant:
+  `avoided_review_minutes = confirmed × review_minutes` und
+  `avoided_review_cost_eur = avoided_review_minutes / 60 × hourly_rate`; dazu
+  `confirmed_amount` (Summe der Beträge bestätigter Findings) und die Precision
+  wie in `stats_by_supplier`. Der Report liefert je Lieferant und aggregiert
+  (`totals`) Findings, bestätigt, Fehlalarm, offene Findings samt offenem
+  Volumen, Precision, bestätigtes Volumen sowie vermiedene Minuten und Kosten;
+  `parameters` weist die wirksamen Annahmen aus. Die Werte lassen sich über
+  `?review_minutes=` und `?hourly_rate=` ohne Neustart als What-if
+  überschreiben (ungültige Werte → `400`). Grundlage bleiben `findings`,
+  `invoices` und `suppliers`; es werden keine neuen Tabellen angelegt. Die
+  Web-Oberfläche zeigt die Sektion „ROI-Nachweis“ mit den aggregierten
+  Kennzahlen und einer Tabelle je Lieferant; ohne Feedback erscheint ein Hinweis
+  statt einer leeren Tabelle.
 - **Wöchentlicher Digest** als E-Mail-fähiger HTML-Report und als JSON.
 - **Digest-Versand per Webhook und SMTP** (`radar/notify.py`)
   - Aktive Zustellung des Wochen-Digests statt manuellem Abruf.
@@ -109,14 +128,19 @@ priorisiert die Freigabe-Entscheidung.
    über `POST /api/digest/weekly/send` bzw. den optionalen Scheduler, inkl.
    Webhook- und SMTP-Kanälen und Helm-Konfiguration (`digest.*`). Verbleibende
    Richtung: **Rollup über mehrere Gesellschaften** in einem gemeinsamen Digest.
-5. **Nächste Richtung: ROI-Nachweis.** Auswertung vermiedener Beträge
-   (Fehlalarm-Quote × Prüfaufwand) für den Preistest. Als Zwischenschritt ist
-   die **lieferantenbezogene Precision** über `GET /api/stats/by-supplier`
+5. **ROI-Nachweis — teilweise umgesetzt.** Auswertung vermiedener Beträge
+   (bestätigte Findings × Prüfaufwand) für den Preistest. Als Zwischenschritt
+   ist die **lieferantenbezogene Precision** über `GET /api/stats/by-supplier`
    verfügbar; mit dem **Rule-Impact-Report** (`GET /api/stats/rule-impact`)
-   liegt nun zusätzlich die Vorher/Nachher-Gegenüberstellung je Lieferant und
-   Regel-Update vor. Der ROI-Nachweis baut auf dieser lieferantenbezogenen
-   Precision und ihrem Verlauf auf und rechnet sie in vermiedenen Prüfaufwand
-   bzw. vermiedene Fehlzahlungen um.
+   liegt zusätzlich die Vorher/Nachher-Gegenüberstellung je Lieferant und
+   Regel-Update vor. **Umgesetzt:** `GET /api/stats/roi` rechnet die
+   bestätigten Treffer je Lieferant und aggregiert in vermiedene Prüfminuten
+   und -kosten (EUR) sowie vermiedene Fehlzahlungen (`confirmed_amount`) um;
+   die Annahmen (Minuten pro Finding, Stundensatz) sind konfigurierbar und per
+   Query als What-if überschreibbar. **Verbleibend:** eine granulare
+   **Artikel-/Positions-Aufschlüsselung** (welche Artikel und Positionen den
+   Aufwand und die vermiedenen Zahlungen treiben) sowie ein Rollup über
+   mehrere Gesellschaften.
 
 ## Validation plan (Bezug zur Produkthypothese)
 

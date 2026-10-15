@@ -607,6 +607,133 @@ class Store:
         results.sort(key=lambda entry: (-entry["open_amount"], entry["supplier"]))
         return results
 
+    def roi_report(
+        self,
+        settings: Optional[Settings] = None,
+        review_minutes: Optional[float] = None,
+        hourly_rate: Optional[float] = None,
+    ) -> dict:
+        """Turn accumulated feedback into a defensible ROI number.
+
+        For every known supplier the report derives the number of findings,
+        confirmed hits, false alarms, still-open findings (and their open
+        amount) plus the precision from the *same* semantics as
+        :meth:`stats_by_supplier`. On top it converts the confirmed hits into
+        avoided review effort: ``confirmed × review_minutes`` minutes and, in
+        aggregate, the corresponding cost in euro. All figures come from
+        ``findings``, ``invoices`` and ``suppliers`` — no new tables.
+
+        ``review_minutes`` and ``hourly_rate`` default to the values from
+        ``settings`` and may be overridden per call for what-if analyses.
+        """
+        base = settings or Settings()
+        minutes = base.review_minutes_per_finding if review_minutes is None else float(
+            review_minutes
+        )
+        rate = (
+            base.review_hourly_rate_eur if hourly_rate is None else float(hourly_rate)
+        )
+        if minutes < 0:
+            raise ValueError("review_minutes must be >= 0")
+        if rate < 0:
+            raise ValueError("hourly_rate must be >= 0")
+
+        with self.connect() as conn:
+            rows = conn.execute(
+                """SELECT s.name AS supplier,
+                          COUNT(f.id) AS findings,
+                          COALESCE(SUM(CASE WHEN f.feedback = 'confirmed'
+                                            THEN 1 ELSE 0 END), 0) AS confirmed,
+                          COALESCE(SUM(CASE WHEN f.feedback = 'false_alarm'
+                                            THEN 1 ELSE 0 END), 0) AS false_alarm,
+                          COALESCE(SUM(CASE WHEN f.status = 'open'
+                                            THEN 1 ELSE 0 END), 0) AS open,
+                          COALESCE(SUM(CASE WHEN f.status = 'open'
+                                            THEN f.amount ELSE 0 END), 0) AS open_amount,
+                          COALESCE(SUM(CASE WHEN f.feedback = 'confirmed'
+                                            THEN f.amount ELSE 0 END), 0) AS confirmed_amount
+                   FROM suppliers s
+                   LEFT JOIN invoices i ON i.supplier = s.name
+                   LEFT JOIN findings f ON f.invoice_id = i.id
+                   GROUP BY s.name"""
+            ).fetchall()
+
+        suppliers: List[dict] = []
+        total_confirmed = 0
+        total_false_alarm = 0
+        total_open = 0
+        total_open_amount = 0.0
+        total_confirmed_amount = 0.0
+
+        for row in rows:
+            confirmed = int(row["confirmed"])
+            false_alarm = int(row["false_alarm"])
+            open_count = int(row["open"])
+            open_amount = float(row["open_amount"])
+            confirmed_amount = float(row["confirmed_amount"])
+            reviewed = confirmed + false_alarm
+            precision = (confirmed / reviewed) if reviewed else None
+            avoided_minutes = round(confirmed * minutes, 2)
+
+            total_confirmed += confirmed
+            total_false_alarm += false_alarm
+            total_open += open_count
+            total_open_amount += open_amount
+            total_confirmed_amount += confirmed_amount
+
+            suppliers.append(
+                {
+                    "supplier": row["supplier"],
+                    "findings": int(row["findings"]),
+                    "confirmed": confirmed,
+                    "false_alarm": false_alarm,
+                    "open": open_count,
+                    "open_amount": round(open_amount, 2),
+                    "precision": round(precision, 4)
+                    if precision is not None
+                    else None,
+                    "confirmed_amount": round(confirmed_amount, 2),
+                    "avoided_review_minutes": avoided_minutes,
+                    "avoided_review_cost_eur": round(
+                        avoided_minutes / 60 * rate, 2
+                    ),
+                }
+            )
+
+        suppliers.sort(
+            key=lambda entry: (
+                -entry["avoided_review_minutes"],
+                -entry["open_amount"],
+                entry["supplier"],
+            )
+        )
+
+        reviewed_total = total_confirmed + total_false_alarm
+        total_precision = (total_confirmed / reviewed_total) if reviewed_total else None
+        total_minutes = round(total_confirmed * minutes, 2)
+        totals = {
+            "suppliers": len(suppliers),
+            "findings": sum(entry["findings"] for entry in suppliers),
+            "confirmed": total_confirmed,
+            "false_alarm": total_false_alarm,
+            "open": total_open,
+            "open_amount": round(total_open_amount, 2),
+            "precision": round(total_precision, 4)
+            if total_precision is not None
+            else None,
+            "confirmed_amount": round(total_confirmed_amount, 2),
+            "avoided_review_minutes": total_minutes,
+            "avoided_review_cost_eur": round(total_minutes / 60 * rate, 2),
+        }
+        return {
+            "suppliers": suppliers,
+            "totals": totals,
+            "parameters": {
+                "review_minutes_per_finding": minutes,
+                "hourly_rate_eur": rate,
+            },
+        }
+
     def rule_impact(self, settings: Optional[Settings] = None) -> List[dict]:
         """Before/after comparison around each supplier's latest rule update.
 

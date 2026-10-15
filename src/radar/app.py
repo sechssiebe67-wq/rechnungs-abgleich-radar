@@ -31,6 +31,26 @@ from .ingest import (
 from .reconcile import invoice_audit, reconcile_all, reconcile_invoice
 
 
+def _non_negative_query_float(
+    query: Dict[str, List[str]], name: str
+) -> Optional[float]:
+    """Read an optional non-negative float from a parsed query string.
+
+    Returns ``None`` when the parameter is absent/empty. Raises :class:`ValueError`
+    (mapped to ``400`` by the dispatcher) for non-numeric or negative values.
+    """
+    raw = query.get(name, [None])[0]
+    if raw is None or raw == "":
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        raise ValueError("%s must be a number" % name)
+    if value < 0:
+        raise ValueError("%s must be >= 0" % name)
+    return value
+
+
 class Router:
     """Minimal path router supporting ``:param`` segments."""
 
@@ -173,6 +193,13 @@ class RadarHandler(BaseHTTPRequestHandler):
     def h_rule_impact(self, params, query) -> None:
         suppliers = self.store.rule_impact(self.settings)
         self._send_json({"suppliers": suppliers, "count": len(suppliers)})
+
+    def h_roi(self, params, query) -> None:
+        review_minutes = _non_negative_query_float(query, "review_minutes")
+        hourly_rate = _non_negative_query_float(query, "hourly_rate")
+        self._send_json(
+            self.store.roi_report(self.settings, review_minutes, hourly_rate)
+        )
 
     def h_suppliers(self, params, query) -> None:
         self._send_json({"suppliers": self.store.list_suppliers()})
@@ -356,6 +383,7 @@ def build_router() -> Router:
     router.add("GET", "/api/stats", RadarHandler.h_stats)
     router.add("GET", "/api/stats/by-supplier", RadarHandler.h_stats_by_supplier)
     router.add("GET", "/api/stats/rule-impact", RadarHandler.h_rule_impact)
+    router.add("GET", "/api/stats/roi", RadarHandler.h_roi)
     router.add("GET", "/api/suppliers", RadarHandler.h_suppliers)
     router.add("POST", "/api/suppliers", RadarHandler.h_add_supplier)
     router.add("GET", "/api/supplier-rules", RadarHandler.h_supplier_rules)

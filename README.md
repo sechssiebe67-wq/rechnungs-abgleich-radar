@@ -35,6 +35,8 @@ Umgebungsvariablen:
 | `RADAR_TOLERANCE_PCT` | `2` | Toleranz für Preis-/Mengenabweichung in Prozent |
 | `RADAR_PRICE_DRIFT_PCT` | `2` | Schwelle für Preisdrift über akzeptierte Preise |
 | `RADAR_DUPLICATE_WINDOW_DAYS` | `45` | Zeitfenster für Duplikatverdacht |
+| `RADAR_REVIEW_MINUTES_PER_FINDING` | `4.0` | Angenommene Prüfzeit pro bestätigtem Finding in Minuten (≥ 0) — Basis des ROI-Nachweises |
+| `RADAR_REVIEW_HOURLY_RATE_EUR` | `45.0` | Angenommener Stundensatz in EUR (≥ 0) zur Bewertung des vermiedenen Prüfaufwands |
 | `RADAR_API_TOKEN` | leer | Wenn gesetzt, ist die API per `Authorization: Bearer …` geschützt (`/healthz` bleibt offen) |
 | `RADAR_DIGEST_WEBHOOK_URL` | leer | Webhook (Slack/Mattermost-kompatibel) für den Digest-Versand; leer = Kanal aus |
 | `RADAR_DIGEST_SMTP_HOST` | leer | SMTP-Host für den E-Mail-Versand; leer = Kanal aus |
@@ -61,6 +63,7 @@ python3 -m unittest discover -s tests -v
 | `GET /api/stats` | Kennzahlen inkl. Precision aus Feedback |
 | `GET /api/stats/by-supplier` | Precision, Findings und offenes Volumen je Lieferant inkl. angewendeter Regeln |
 | `GET /api/stats/rule-impact` | Vorher/Nachher-Vergleich der Findings und Precision je Lieferant vor/nach dem letzten Regel-Update |
+| `GET /api/stats/roi` | ROI-Nachweis: vermiedener Prüfaufwand und vermiedene Fehlzahlungen aus dem Feedback, je Lieferant und gesamt (`?review_minutes=`, `?hourly_rate=`) |
 | `POST /api/suppliers` | Lieferant anlegen |
 | `GET /api/supplier-rules` | Liste aller Lieferanten-Regeln |
 | `GET /api/supplier-rules/:supplier` | Einzelne Regel oder `404` |
@@ -173,6 +176,73 @@ curl -sS http://localhost:8080/api/stats/rule-impact
 Die Web-Oberfläche zeigt den Report als Sektion „Regel-Wirkung“ mit Precision
 vorher/nachher je Lieferant; ohne Regel-Historie erscheint dort ein Hinweis
 statt einer leeren Tabelle.
+
+### ROI-Nachweis
+
+`GET /api/stats/roi` macht aus der akkumulierten Precision einen konkreten,
+belastbaren Euro-Wert. Basis sind die bestätigten Treffer: Jeder bestätigte
+Treffer entspricht einer manuell vermiedenen Prüfung.
+`avoided_review_minutes = confirmed × review_minutes_per_finding` und
+`avoided_review_cost_eur = avoided_review_minutes / 60 × hourly_rate`. Die
+Summe der Beträge bestätigter Findings (`confirmed_amount`) weist zusätzlich die
+vermiedenen Fehlzahlungen aus.
+
+Der Report liefert drei Blöcke:
+
+- `parameters`: die wirksamen Annahmen `review_minutes_per_finding` und
+  `hourly_rate_eur` (aus `RADAR_REVIEW_MINUTES_PER_FINDING` /
+  `RADAR_REVIEW_HOURLY_RATE_EUR`).
+- `suppliers`: je Lieferant `findings`, `confirmed`, `false_alarm`, `open`,
+  `open_amount`, `precision`, `confirmed_amount`, `avoided_review_minutes` und
+  `avoided_review_cost_eur`.
+- `totals`: dieselben Kennzahlen aggregiert über alle Lieferanten inklusive
+  Gesamt-Precision.
+
+```sh
+# Standardwerte (4 Min/Finding, 45 EUR/h)
+curl -sS http://localhost:8080/api/stats/roi
+
+# What-if ohne Neustart: 10 Minuten pro Finding und 60 EUR/h
+curl -sS 'http://localhost:8080/api/stats/roi?review_minutes=10&hourly_rate=60'
+```
+
+```json
+{
+  "suppliers": [
+    {
+      "supplier": "ACME GmbH",
+      "findings": 12,
+      "confirmed": 6,
+      "false_alarm": 6,
+      "open": 0,
+      "open_amount": 0.0,
+      "precision": 0.5,
+      "confirmed_amount": 84.0,
+      "avoided_review_minutes": 24.0,
+      "avoided_review_cost_eur": 18.0
+    }
+  ],
+  "totals": {
+    "suppliers": 1,
+    "findings": 12,
+    "confirmed": 6,
+    "false_alarm": 6,
+    "open": 0,
+    "open_amount": 0.0,
+    "precision": 0.5,
+    "confirmed_amount": 84.0,
+    "avoided_review_minutes": 24.0,
+    "avoided_review_cost_eur": 18.0
+  },
+  "parameters": {"review_minutes_per_finding": 4.0, "hourly_rate_eur": 45.0}
+}
+```
+
+Ungültige Overrides (negativ oder nicht numerisch) antworten mit `400` und
+einem JSON-Fehlerkörper. Ohne Feedback ist die Precision `null` und der
+vermiedene Aufwand `0`. Die Web-Oberfläche zeigt die Sektion „ROI-Nachweis“ mit
+den aggregierten Kennzahlen und einer Tabelle je Lieferant; solange kein
+Feedback vorliegt, erscheint dort ein Hinweis statt einer leeren Tabelle.
 
 ## Wöchentlicher Digest
 

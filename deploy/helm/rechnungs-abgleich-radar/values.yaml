@@ -40,6 +40,8 @@ config:
   tolerancePct: "2"
   priceDriftPct: "2"
   duplicateWindowDays: "45"
+  reviewMinutesPerFinding: "4"
+  reviewHourlyRateEur: "45"
 
 auth:
   enabled: false

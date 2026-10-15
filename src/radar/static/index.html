@@ -71,6 +71,17 @@
   </section>
 
   <section>
+    <h2>ROI-Nachweis <span class="muted">(vermiedener Prüfaufwand aus bestätigten Findings)</span></h2>
+    <p class="muted">Rechnet die bestätigten Treffer in vermiedene Prüfzeit und vermiedene Fehlzahlungen um.</p>
+    <div class="metrics" id="roi-metrics"></div>
+    <p class="muted" id="roi-hint"></p>
+    <table id="roi-table" style="margin-top:.75rem">
+      <thead><tr><th>Lieferant</th><th class="amount">Findings</th><th class="amount">Bestätigt</th><th class="amount">Fehlalarm</th><th class="amount">Precision</th><th class="amount">Bestätigtes Volumen</th><th class="amount">Vermiedene Minuten</th><th class="amount">Vermiedene Kosten</th></tr></thead>
+      <tbody id="roi-suppliers"><tr><td colspan="8" class="muted">Lade …</td></tr></tbody>
+    </table>
+  </section>
+
+  <section>
     <h2>Rechnungen hochladen (CSV)</h2>
     <p class="muted">Spalten: invoice_number,supplier,invoice_date,position,article,quantity,unit_price,po_number</p>
     <textarea id="csv" placeholder="RE-1001,ACME GmbH,2026-01-15,1,Schraube M8,100,0.42,PO-77"></textarea>
@@ -180,6 +191,39 @@ async function loadRuleImpact() {
   }).join('');
   document.getElementById('rule-impact').innerHTML = rows || '<tr><td colspan="6" class="muted">Keine Regel-Historie vorhanden — Regeländerungen erscheinen hier.</td></tr>';
 }
+async function loadRoi() {
+  const d = await api('/api/stats/roi');
+  const t = d.totals || {};
+  const hours = (t.avoided_review_minutes || 0) / 60;
+  document.getElementById('roi-metrics').innerHTML = [
+    ['Vermiedene Prüfstunden', hours.toFixed(2) + ' h'],
+    ['Vermiedene Kosten', money(t.avoided_review_cost_eur || 0)],
+    ['Bestätigtes Volumen', money(t.confirmed_amount || 0)],
+    ['Precision gesamt', pct(t.precision)],
+  ].map(([label, value]) => `<div class="metric"><div class="value">${esc(value)}</div><div class="label">${esc(label)}</div></div>`).join('');
+
+  const hasFeedback = (t.confirmed || 0) + (t.false_alarm || 0) > 0;
+  const table = document.getElementById('roi-table');
+  if (!hasFeedback) {
+    document.getElementById('roi-hint').textContent = 'Noch kein Feedback erfasst — bestätigen oder verwerfen Sie Findings, um den ROI-Nachweis zu füllen.';
+    table.style.display = 'none';
+    document.getElementById('roi-suppliers').innerHTML = '';
+    return;
+  }
+  document.getElementById('roi-hint').textContent = '';
+  table.style.display = '';
+  const rows = d.suppliers.map(s => `<tr>
+    <td>${esc(s.supplier)}</td>
+    <td class="amount">${esc(s.findings)}</td>
+    <td class="amount">${esc(s.confirmed)}</td>
+    <td class="amount">${esc(s.false_alarm)}</td>
+    <td class="amount">${pct(s.precision)}</td>
+    <td class="amount">${money(s.confirmed_amount)}</td>
+    <td class="amount">${esc(s.avoided_review_minutes)}</td>
+    <td class="amount">${money(s.avoided_review_cost_eur)}</td>
+  </tr>`).join('');
+  document.getElementById('roi-suppliers').innerHTML = rows || '<tr><td colspan="8" class="muted">Keine Lieferanten mit Feedback.</td></tr>';
+}
 async function feedback(id, verdict) {
   await api('/api/findings/' + id + '/feedback', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({verdict})});
   await refresh();
@@ -226,7 +270,7 @@ async function reconcileAll() {
   await api('/api/reconcile', {method:'POST', headers:{'Content-Type':'application/json'}, body: '{}'});
   await refresh();
 }
-async function refresh() { await Promise.all([loadMetrics(), loadFindings(), loadSupplierPrecision(), loadSupplierRules(), loadRuleImpact()]); }
+async function refresh() { await Promise.all([loadMetrics(), loadFindings(), loadSupplierPrecision(), loadSupplierRules(), loadRuleImpact(), loadRoi()]); }
 loadHealth(); refresh();
 </script>
 </body>

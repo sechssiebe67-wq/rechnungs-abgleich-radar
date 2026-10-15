@@ -17,6 +17,22 @@ def _float_env(name: str, default: float) -> float:
         return default
 
 
+def _non_negative_float_env(name: str, default: float) -> float:
+    """Parse a float env var, falling back to ``default``.
+
+    Values that are not numeric or that are negative are rejected and the
+    default is used instead, so a typo cannot silently distort the ROI math.
+    """
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return value if value >= 0 else default
+
+
 def _int_env(name: str, default: int) -> int:
     raw = os.environ.get(name)
     if raw is None or raw.strip() == "":
@@ -52,6 +68,8 @@ class Settings:
     digest_smtp_to: str = ""
     digest_smtp_use_tls: bool = True
     digest_schedule: str = ""
+    review_minutes_per_finding: float = 4.0
+    review_hourly_rate_eur: float = 45.0
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -72,6 +90,12 @@ class Settings:
             digest_smtp_to=os.environ.get("RADAR_DIGEST_SMTP_TO", ""),
             digest_smtp_use_tls=_bool_env("RADAR_DIGEST_SMTP_USE_TLS", True),
             digest_schedule=os.environ.get("RADAR_DIGEST_SCHEDULE", ""),
+            review_minutes_per_finding=_non_negative_float_env(
+                "RADAR_REVIEW_MINUTES_PER_FINDING", 4.0
+            ),
+            review_hourly_rate_eur=_non_negative_float_env(
+                "RADAR_REVIEW_HOURLY_RATE_EUR", 45.0
+            ),
         )
 
 
