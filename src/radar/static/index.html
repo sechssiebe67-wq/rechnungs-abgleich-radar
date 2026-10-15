@@ -62,6 +62,15 @@
   </section>
 
   <section>
+    <h2>Regel-Wirkung <span class="muted">(Precision vor/nach dem letzten Regel-Update)</span></h2>
+    <p class="muted">Zeigt, ob ein Regel-Update die Fehlalarme eines Lieferanten tatsächlich reduziert.</p>
+    <table>
+      <thead><tr><th>Lieferant</th><th>Zuletzt geändert</th><th class="amount">Precision vorher</th><th class="amount">Precision nachher</th><th class="amount">Offen vorher</th><th class="amount">Offen nachher</th></tr></thead>
+      <tbody id="rule-impact"><tr><td colspan="6" class="muted">Lade …</td></tr></tbody>
+    </table>
+  </section>
+
+  <section>
     <h2>Rechnungen hochladen (CSV)</h2>
     <p class="muted">Spalten: invoice_number,supplier,invoice_date,position,article,quantity,unit_price,po_number</p>
     <textarea id="csv" placeholder="RE-1001,ACME GmbH,2026-01-15,1,Schraube M8,100,0.42,PO-77"></textarea>
@@ -154,6 +163,23 @@ async function loadSupplierPrecision() {
   }).join('');
   document.getElementById('supplier-precision').innerHTML = rows || '<tr><td colspan="7" class="muted">Keine Lieferanten vorhanden.</td></tr>';
 }
+function pct(v) { return v == null ? '—' : Math.round(v * 100) + '%'; }
+async function loadRuleImpact() {
+  const d = await api('/api/stats/rule-impact');
+  const rows = d.suppliers.map(s => {
+    const before = s.before || {};
+    const after = s.after || {};
+    return `<tr>
+      <td>${esc(s.supplier)}</td>
+      <td>${esc(s.changed_at)}</td>
+      <td class="amount">${pct(before.precision)}</td>
+      <td class="amount">${pct(after.precision)}</td>
+      <td class="amount">${money(before.open_amount || 0)}</td>
+      <td class="amount">${money(after.open_amount || 0)}</td>
+    </tr>`;
+  }).join('');
+  document.getElementById('rule-impact').innerHTML = rows || '<tr><td colspan="6" class="muted">Keine Regel-Historie vorhanden — Regeländerungen erscheinen hier.</td></tr>';
+}
 async function feedback(id, verdict) {
   await api('/api/findings/' + id + '/feedback', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({verdict})});
   await refresh();
@@ -200,7 +226,7 @@ async function reconcileAll() {
   await api('/api/reconcile', {method:'POST', headers:{'Content-Type':'application/json'}, body: '{}'});
   await refresh();
 }
-async function refresh() { await Promise.all([loadMetrics(), loadFindings(), loadSupplierPrecision(), loadSupplierRules()]); }
+async function refresh() { await Promise.all([loadMetrics(), loadFindings(), loadSupplierPrecision(), loadSupplierRules(), loadRuleImpact()]); }
 loadHealth(); refresh();
 </script>
 </body>

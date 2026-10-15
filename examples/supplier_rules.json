@@ -1,4 +1,5 @@
 [
   {"supplier": "ACME GmbH", "tolerance_pct": 1.0},
-  {"supplier": "Beta AG", "min_amount_eur": 5.0}
+  {"supplier": "Beta AG", "min_amount_eur": 5.0},
+  {"supplier": "Gamma Logistik GmbH", "price_drift_pct": 1.5, "duplicate_window_days": 30}
 ]

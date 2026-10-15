@@ -63,6 +63,14 @@ persistentem Speicher.
   Die Web-Oberfläche zeigt die nach offenem Volumen sortierte Tabelle an und
   macht so sichtbar, ob ein Lieferanten-Regelprofil die Fehlalarme dieses
   Lieferanten reduziert.
+- **Rule-Impact-Report** (`GET /api/stats/rule-impact`): Vorher/Nachher-
+  Gegenüberstellung je Lieferant mit Regel-Historie. Für jedes Regel-Update
+  (`supplier_rule_history`) werden die Findings und das Feedback vor bzw. ab
+  dem jüngsten Änderungszeitpunkt gegenübergestellt — inklusive Precision und
+  offenem Volumen je Zeitraum sowie der aktuell wirksamen Regel
+  (`applied_rule`). Die Web-Oberfläche zeigt die Sektion „Regel-Wirkung“ und
+  macht datenbasiert nachweisbar, ob ein Regelprofil (Toleranz, Drift-Schwelle,
+  Freibetrag) die Fehlalarme eines Lieferanten tatsächlich reduziert.
 - **Wöchentlicher Digest** als E-Mail-fähiger HTML-Report und als JSON.
 - **Digest-Versand per Webhook und SMTP** (`radar/notify.py`)
   - Aktive Zustellung des Wochen-Digests statt manuellem Abruf.
@@ -101,11 +109,14 @@ priorisiert die Freigabe-Entscheidung.
    über `POST /api/digest/weekly/send` bzw. den optionalen Scheduler, inkl.
    Webhook- und SMTP-Kanälen und Helm-Konfiguration (`digest.*`). Verbleibende
    Richtung: **Rollup über mehrere Gesellschaften** in einem gemeinsamen Digest.
-5. Auswertung vermiedener Beträge (ROI-Nachweis) für den Preistest. Als
-   Zwischenschritt ist die **lieferantenbezogene Precision** über
-   `GET /api/stats/by-supplier` bereits verfügbar und zeigt, ob ein
-   Regelprofil die Fehlalarme eines Lieferanten reduziert; der ROI-Nachweis
-   baut darauf auf.
+5. **Nächste Richtung: ROI-Nachweis.** Auswertung vermiedener Beträge
+   (Fehlalarm-Quote × Prüfaufwand) für den Preistest. Als Zwischenschritt ist
+   die **lieferantenbezogene Precision** über `GET /api/stats/by-supplier`
+   verfügbar; mit dem **Rule-Impact-Report** (`GET /api/stats/rule-impact`)
+   liegt nun zusätzlich die Vorher/Nachher-Gegenüberstellung je Lieferant und
+   Regel-Update vor. Der ROI-Nachweis baut auf dieser lieferantenbezogenen
+   Precision und ihrem Verlauf auf und rechnet sie in vermiedenen Prüfaufwand
+   bzw. vermiedene Fehlzahlungen um.
 
 ## Validation plan (Bezug zur Produkthypothese)
 
@@ -114,8 +125,11 @@ Abweichungen gegen manuelle Nachprüfung, Abbruch bei weniger als 5 bestätigten
 Abweichungen pro 200 Rechnungen oder Precision unter 50 %. Zusätzlich lässt sich
 die Precision **pro Lieferant** auswerten, wenn die Feedback-Daten mit den
 Lieferanten-Regelprofilen verschritten werden — so zeigt sich, ob ein Profil die
-Fehlalarme eines Lieferanten tatsächlich reduziert. Die Feedback- und
-Digest-Funktionen dieses Inkrements liefern dafür die Messgrößen.
+Fehlalarme eines Lieferanten tatsächlich reduziert. Der **Rule-Impact-Report**
+`GET /api/stats/rule-impact` stellt dafür Findings, Feedback und Precision
+explizit vor und nach dem jüngsten Regel-Update gegenüber und macht den Effekt
+einer Nachjustierung direkt sichtbar. Die Feedback- und Digest-Funktionen
+dieses Inkrements liefern dafür die Messgrößen.
 
 Der **Digest-Versand** unterstützt den Concierge-Test direkt: Der Wochen-Digest
 wird den Testkunden per Webhook/SMTP aktiv zugestellt (statt manuellem Abruf),
