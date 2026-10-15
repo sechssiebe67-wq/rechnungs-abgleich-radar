@@ -21,6 +21,7 @@ from .config import Settings
 from .db import (
     DEFAULT_FINDING_ORDER,
     DEFAULT_INVOICE_ORDER,
+    DEFAULT_REVIEW_WORKLOAD_LIMIT,
     DEFAULT_SUPPLIER_RULE_ORDER,
     FINDING_ORDER_BY,
     INVOICE_ORDER_BY,
@@ -554,6 +555,26 @@ class RadarHandler(BaseHTTPRequestHandler):
             }
         )
 
+    def h_review_workload(self, params, query) -> None:
+        limit = _non_negative_query_int(query, "limit")
+        entities = _query_list(query, "entity") or None
+        cost_centers = _query_list(query, "cost_center") or None
+        effective_limit = DEFAULT_REVIEW_WORKLOAD_LIMIT if limit is None else limit
+        invoices = self.store.review_workload(
+            self.settings, effective_limit, entities, cost_centers
+        )
+        self._send_json(
+            {
+                "invoices": invoices,
+                "count": len(invoices),
+                "limit": effective_limit,
+                "parameters": {
+                    "review_minutes_per_finding": self.settings.review_minutes_per_finding,
+                    "review_hourly_rate_eur": self.settings.review_hourly_rate_eur,
+                },
+            }
+        )
+
     def h_invoices_export(self, params, query) -> None:
         entities = _query_list(query, "entity") or None
         cost_centers = _query_list(query, "cost_center") or None
@@ -745,6 +766,7 @@ def build_router() -> Router:
     router.add("POST", "/api/purchase-orders/import", RadarHandler.h_import_purchase_orders)
     router.add("GET", "/api/purchase-orders/:po_number", RadarHandler.h_get_purchase_order)
     router.add("GET", "/api/invoices", RadarHandler.h_invoices)
+    router.add("GET", "/api/review-workload", RadarHandler.h_review_workload)
     router.add("POST", "/api/invoices", RadarHandler.h_add_invoice)
     router.add("POST", "/api/invoices/import", RadarHandler.h_import_invoices)
     router.add("GET", "/api/invoices/export", RadarHandler.h_invoices_export)

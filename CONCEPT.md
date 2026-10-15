@@ -47,7 +47,9 @@ Prüflast** (offene Findings und den daran gebundenen Aufwand) je Gesellschaft u
 Kostenstelle ausweist. Bei der Abarbeitung des Wochen-Digests und der
 Findings-Liste arbeiten sie zuerst die Rechnungen mit dem **größten offenen
 Prüfvolumen** ab (viele offene Findings bzw. hoher offener Betrag), weil dort pro
-Rechnung die meiste Arbeit gebündelt ist. Die Teams exportieren die Findings- und
+Rechnung die meiste Arbeit gebündelt ist; die **Prüf-Last-Top-Liste**
+(`GET /api/review-workload`) liefert dafür direkt die Rechnung mit dem größten
+offenen Prüfvolumen als erste Zeile. Die Teams exportieren die Findings- und
 Rechnungsliste als CSV, um sie in Excel weiterzuverarbeiten, mit dem Einkauf zu
 teilen oder als Prüfnachweis abzulegen.
 
@@ -147,6 +149,27 @@ persistentem Speicher.
     muss ich noch anfassen“ sortierbar wird. Unbekannte Werte liefern `400`.
   - Reine Lese-Erweiterung auf den bestehenden Tabellen: keine neuen Tabellen,
     Spalten oder Laufzeit-Abhängigkeiten, keine Änderung an bestehenden Feldern.
+- **Prüf-Last je Rechnung (Top-Liste)** (`GET /api/review-workload`): Der
+  Endpoint bündelt die offene Arbeit direkt auf Rechnungsebene, statt sie
+  seitenweise über `/api/invoices` zu laden und clientseitig zu sortieren. Er
+  liefert die Rechnungen mit **mindestens einem offenen Finding**, aggregiert
+  per `LEFT JOIN`/Aggregat über `findings` (kein N+1), mit `id`,
+  `invoice_number`, `supplier`, `entity`, `cost_center`, `finding_count`,
+  `open_finding_count`, `reviewed_finding_count`, `open_amount`,
+  `open_review_minutes` und `open_review_cost_eur`. `open_amount` ist exakt die
+  Kennzahl aus `GET /api/stats?entity=…` (Summe der Beträge offener Findings),
+  die Aufwandsfelder folgen den ROI-Annahmen
+  (`open_review_minutes = open_finding_count × review_minutes_per_finding`,
+  `open_review_cost_eur = open_review_minutes / 60 × hourly_rate`, gerundet auf
+  zwei Nachkommastellen). Sortiert wird absteigend nach `open_amount`, bei
+  Gleichstand absteigend nach `open_finding_count`, dann aufsteigend nach `id`
+  (deterministisch). `?limit=` (nicht-negative Ganzzahl, Default `25`,
+  `0` erlaubt) begrenzt die Liste, `?entity=` und `?cost_center=` filtern
+  wiederholbar und UND-verknüpft wie `list_invoices`; unbekannte Werte liefern
+  `200` mit leerer Liste, ungültiges `limit` `400` mit JSON-Fehlerkörper. Die
+  Antwort enthält `invoices`, `count`, `limit` und `parameters`
+  (`review_minutes_per_finding`, `review_hourly_rate_eur`). Reine
+  Lese-Erweiterung ohne neue Tabellen, Spalten oder Laufzeit-Abhängigkeiten.
 - **Web-Oberfläche mit Seitenumschaltung und Sortierung**
   (`src/radar/static/index.html`): Die Listen für Findings, Rechnungen und
   Lieferanten-Regeln bedienen die oben beschriebenen Endpoint-Parameter direkt,
@@ -507,11 +530,19 @@ priorisiert die Freigabe-Entscheidung.
    `open_finding_count`, `reviewed_finding_count`, `open_amount` und
    `review_status` (`clean`/`open`/`reviewed`) auf `GET /api/invoices` sowie die
    Sortierungen `open_amount_desc` und `open_finding_count_desc`, damit die
-   Liste direkt nach „was muss ich noch anfassen“ sortierbar ist. **Nächster
-   sinnvoller Schritt:** denselben `review_status`-Filter auch im
-   **Wochen-Digest** anbieten, damit der Digest nur noch die noch nicht
-   durchgesehenen Rechnungen ausweist — und darauf aufbauend die Priorisierung
-   ganzer Gesellschaften/Kostenstellen nach gebundenem offenem Prüfaufwand.
+   Liste direkt nach „was muss ich noch anfassen“ sortierbar ist. **Umgesetzt
+   (zweite Achse):** die **Top-Liste `GET /api/review-workload`**, die die
+   Rechnungen mit offenen Findings serverseitig aggregiert und nach
+   `open_amount`, `open_finding_count` und `id` sortiert ausliefert — bereits
+   inklusive `open_review_minutes`/`open_review_cost_eur` je Rechnung. Damit
+   bildet die Liste die Grundlage für eine spätere Priorisierung nach
+   **geschätztem Aufwand statt nur nach Betrag**: Der nächste sinnvolle Schritt
+   ist, die Reihenfolge über einen `?sort=review_cost_desc`-Schalter auch nach
+   `open_review_cost_eur` wählen zu können. **Nächster sinnvoller Schritt:**
+   denselben `review_status`-Filter auch im **Wochen-Digest** anbieten, damit
+   der Digest nur noch die noch nicht durchgesehenen Rechnungen ausweist — und
+   darauf aufbauend die Priorisierung ganzer Gesellschaften/Kostenstellen nach
+   gebundenem offenem Prüfaufwand.
 9. **CSV-Export der Findings- und Rechnungsliste — umgesetzt.** Über
    `GET /api/findings/export` und `GET /api/invoices/export` laden
    Kreditorenbuchhaltung, Einkauf und Revision die beiden Listen mit stabilen
