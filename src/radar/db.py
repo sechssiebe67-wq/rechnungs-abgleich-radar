@@ -137,6 +137,11 @@ SUPPLIER_RULE_FIELDS = (
 # customer reconciles thousands of distinct articles.
 DEFAULT_ARTICLE_LIMIT = 50
 
+# Default size of the invoice-level review workload top list. Keeps the response
+# bounded while still concentrating on the invoices that bind the most open
+# review effort; callers may override it with ``?limit=``.
+DEFAULT_REVIEW_WORKLOAD_LIMIT = 25
+
 # Display label for findings that are not tied to a single invoice position
 # (e.g. ``missing_po`` or ``duplicate``); they still count towards the report.
 NO_POSITION_LABEL = "(ohne Position)"
@@ -668,6 +673,96 @@ class Store:
                     "SELECT COUNT(*) AS c FROM invoices i" + where, params
                 ).fetchone()["c"]
             )
+
+    def review_workload(
+        self,
+        settings: Optional[Settings] = None,
+        limit: Optional[int] = None,
+        entities: Optional[List[str]] = None,
+        cost_centers: Optional[List[str]] = None,
+    ) -> List[dict]:
+        """Invoices that bind the most open review effort, top first.
+
+        One row per invoice with at least one still-open finding
+        (``open_finding_count > 0``), computed with a single ``LEFT JOIN``
+        aggregate over ``findings`` (no N+1). ``open_amount`` sums the amounts
+        of the invoice's open findings and therefore matches the ``open_amount``
+        reported by ``GET /api/stats`` for the same scope. On top, the bound
+        effort is derived from the ROI assumptions:
+        ``open_review_minutes = open_finding_count × review_minutes_per_finding``
+        and ``open_review_cost_eur = open_review_minutes / 60 × hourly_rate``
+        (both rounded to two decimals, like the ROI reports).
+
+        The list is sorted by ``open_amount`` descending, then
+        ``open_finding_count`` descending, then ``id`` ascending — fully
+        deterministic for ties. ``limit`` is applied server-side (default
+        :data:`DEFAULT_REVIEW_WORKLOAD_LIMIT`); ``0`` yields an empty list.
+        ``entities``/``cost_centers`` restrict the result exactly like
+        :meth:`list_invoices` and are AND-combined; unknown values yield an
+        empty list rather than an error.
+        """
+        base = settings or Settings()
+        minutes = base.review_minutes_per_finding
+        rate = base.review_hourly_rate_eur
+        cap = DEFAULT_REVIEW_WORKLOAD_LIMIT if limit is None else int(limit)
+        if cap < 0:
+            raise ValueError("limit must be >= 0")
+
+        clauses: List[str] = []
+        params: List[object] = []
+        if entities:
+            placeholders = ", ".join("?" for _ in entities)
+            clauses.append("i.entity IN (%s)" % placeholders)
+            params.extend(entities)
+        if cost_centers:
+            placeholders = ", ".join("?" for _ in cost_centers)
+            clauses.append("i.cost_center IN (%s)" % placeholders)
+            params.extend(cost_centers)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+
+        query = (
+            """SELECT i.id, i.invoice_number, i.supplier,
+                      COALESCE(i.entity, 'default') AS entity,
+                      COALESCE(i.cost_center, '') AS cost_center,
+                      COUNT(f.id) AS finding_count,
+                      COALESCE(SUM(CASE WHEN f.id IS NOT NULL AND f.feedback IS NULL
+                                        THEN 1 ELSE 0 END), 0) AS open_finding_count,
+                      COALESCE(SUM(CASE WHEN f.id IS NOT NULL AND f.feedback IS NOT NULL
+                                        THEN 1 ELSE 0 END), 0) AS reviewed_finding_count,
+                      COALESCE(SUM(CASE WHEN f.status = 'open'
+                                        THEN f.amount ELSE 0 END), 0) AS open_amount
+               FROM invoices i
+               LEFT JOIN findings f ON f.invoice_id = i.id
+               %s
+               GROUP BY i.id
+               HAVING open_finding_count > 0
+               ORDER BY open_amount DESC, open_finding_count DESC, i.id ASC
+               LIMIT ?"""
+            % where
+        )
+        params.append(cap)
+        with self.connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        results: List[dict] = []
+        for row in rows:
+            open_count = int(row["open_finding_count"])
+            open_minutes = round(open_count * minutes, 2)
+            results.append(
+                {
+                    "id": int(row["id"]),
+                    "invoice_number": row["invoice_number"],
+                    "supplier": row["supplier"],
+                    "entity": row["entity"] or "default",
+                    "cost_center": row["cost_center"] or "",
+                    "finding_count": int(row["finding_count"]),
+                    "open_finding_count": open_count,
+                    "reviewed_finding_count": int(row["reviewed_finding_count"]),
+                    "open_amount": round(float(row["open_amount"]), 2),
+                    "open_review_minutes": open_minutes,
+                    "open_review_cost_eur": round(open_minutes / 60 * rate, 2),
+                }
+            )
+        return results
 
     def list_entities(self) -> List[str]:
         """Return the distinct, sorted entities occurring in invoices."""

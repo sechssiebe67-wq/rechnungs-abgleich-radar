@@ -81,6 +81,7 @@ python3 -m unittest discover -s tests -v
 | `POST /api/invoices/import` | Rechnungen per CSV (ein Datensatz pro Position) importieren |
 | `GET /api/invoices/:id` | Nachvollziehbarkeit: was wurde verglichen, was wich ab; Findings je Artikel/Position als `items` + `items_total_amount` |
 | `GET /api/invoices/export` | Rechnungsliste als CSV-Download (`text/csv`), optional gefiltert (`?entity=`, `?cost_center=`) |
+| `GET /api/review-workload` | Top-Liste der Rechnungen mit offenen Findings absteigend nach offenem Volumen, inkl. geschätztem Prüfaufwand (`open_review_minutes`, `open_review_cost_eur`); optional `?limit=` (Default 25), `?entity=`, `?cost_center=` (mehrfach, UND-verknüpft) |
 | `POST /api/reconcile` | Alle Rechnungen (oder `{"invoice_id": …}`) neu abgleichen |
 | `GET /api/findings?status=open&min_amount=&entity=` | Priorisierte Auffälligkeiten; optional nach Rechnungs-Prüfstatus gefiltert (`?review_status=open\|reviewed\|all`), seitenweise (`?limit=`, `?offset=`) und sortiert (`?sort=`) |
 | `GET /api/findings/export` | Findings-Liste als CSV-Download (`text/csv`), optional gefiltert (`?status=`, `?min_amount=`, `?entity=`, `?review_status=`) |
@@ -363,6 +364,79 @@ Finding-Typen) und einem „Audit“-Button je Rechnung. Die Tabelle listet alle
 verglichenen Positionen (saubere Positionen mit `0` Findings und `0,00 EUR`);
 hat die Rechnung keine Findings, erscheint zusätzlich ein Hinweis, und nur wenn
 gar keine Positionen existieren, wird die Tabelle ausgeblendet.
+
+### Prüf-Last je Rechnung
+
+`GET /api/review-workload` bündelt die offene Prüfarbeit direkt auf
+Rechnungsebene: Statt die Rechnungsliste seitenweise zu laden und clientseitig
+zu sortieren/aggregieren, liefert der Endpoint die Rechnungen mit **mindestens
+einem offenen Finding** — absteigend nach **offenem Volumen** `open_amount`
+(bei Gleichstand absteigend nach `open_finding_count`, dann aufsteigend nach
+`id`, deterministisch). `open_amount` ist dieselbe Kennzahl wie im
+`GET /api/stats`-Zähler; die Summe über alle gelieferten Rechnungen (ohne
+`limit`) entspricht dem `open_amount` aus `GET /api/stats` für denselben Filter.
+
+Je Rechnung liefert die Antwort:
+
+| Feld | Bedeutung |
+| --- | --- |
+| `id`, `invoice_number`, `supplier`, `entity`, `cost_center` | Rechnungsstammdaten |
+| `finding_count` | Anzahl aller Findings der Rechnung |
+| `open_finding_count` | Findings ohne Feedback |
+| `reviewed_finding_count` | Findings mit Feedback |
+| `open_amount` | Summe der Beträge offener Findings (EUR) |
+| `open_review_minutes` | `open_finding_count × review_minutes_per_finding` |
+| `open_review_cost_eur` | `open_review_minutes / 60 × hourly_rate`, auf zwei Nachkommastellen |
+
+Die Antwort enthält zusätzlich `count`, `limit` und `parameters`
+(`review_minutes_per_finding`, `review_hourly_rate_eur`).
+
+| Parameter | Bedeutung | Validierung |
+| --- | --- | --- |
+| `limit` | maximale Anzahl Rechnungen | nicht-negative Ganzzahl, Default `25`, `0` erlaubt |
+| `entity` | Gesellschafts-Filter, mehrfach angebbar | unbekannte Werte liefern `200` mit leerer Liste |
+| `cost_center` | Kostenstellen-Filter, mehrfach angebbar | unbekannte Werte liefern `200` mit leerer Liste |
+
+`entity` und `cost_center` sind **UND-verknüpft** (wie bei `/api/invoices`).
+Ungültige `limit`-Werte (`-1`, `abc`) liefern `400` mit JSON-Fehlerkörper. Es
+kommen keine neuen Tabellen, Spalten oder Laufzeit-Abhängigkeiten hinzu.
+
+```sh
+curl -sS 'http://localhost:8080/api/review-workload?limit=10&entity=DE01'
+```
+
+```json
+{
+  "invoices": [
+    {
+      "id": 42,
+      "invoice_number": "RE-1001",
+      "supplier": "ACME GmbH",
+      "entity": "DE01",
+      "cost_center": "KST-100",
+      "finding_count": 3,
+      "open_finding_count": 2,
+      "reviewed_finding_count": 1,
+      "open_amount": 120.0,
+      "open_review_minutes": 8.0,
+      "open_review_cost_eur": 6.0
+    }
+  ],
+  "count": 1,
+  "limit": 10,
+  "parameters": {
+    "review_minutes_per_finding": 4.0,
+    "review_hourly_rate_eur": 45.0
+  }
+}
+```
+
+Die Web-Oberfläche zeigt die Sektion „Prüf-Last je Rechnung“ mit den Spalten
+Rechnungsnummer, Lieferant, Gesellschaft, Kostenstelle, offene Findings, offenes
+Volumen EUR und geschätzter Aufwand EUR. Sie nutzt die bestehenden
+Gesellschafts-/Kostenstellen-Mehrfachauswahlen, lädt bei Änderung neu und zeigt
+bei `400` eine sichtbare Fehlermeldung, ohne die zuletzt geladene Ansicht zu
+verwerfen.
 
 ### CSV-Export
 

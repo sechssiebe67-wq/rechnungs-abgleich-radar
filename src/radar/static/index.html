@@ -117,6 +117,22 @@
   </section>
 
   <section>
+    <h2>Prüf-Last je Rechnung <span class="muted">(Top-Liste nach offenem Prüfvolumen)</span></h2>
+    <div class="controls">
+      <button class="secondary" onclick="loadReviewWorkload()">Aktualisieren</button>
+      <span class="muted" id="review-workload-hint">Lade …</span>
+      <span class="error" id="review-workload-error"></span>
+    </div>
+    <table id="review-workload-table" style="margin-top:.5rem">
+      <thead><tr>
+        <th>Rechnungsnummer</th><th>Lieferant</th><th>Gesellschaft</th><th>Kostenstelle</th>
+        <th class="amount">Findings offen</th><th class="amount">Offenes Volumen EUR</th><th class="amount">Geschätzter Aufwand EUR</th>
+      </tr></thead>
+      <tbody id="review-workload"><tr><td colspan="7" class="muted">Lade …</td></tr></tbody>
+    </table>
+  </section>
+
+  <section>
     <h2>Rechnungs-Audit <span class="muted">(Findings gruppiert nach Artikel und Position)</span></h2>
     <p class="muted">Zeigt je Rechnung, welche Artikel und Positionen das Abweichungsvolumen treiben.</p>
     <div class="controls">
@@ -200,7 +216,7 @@
         </select>
       </label>
       <label class="muted">Kostenstellen (Mehrfachauswahl)
-        <select id="cost-center-filter" multiple size="4" onchange="loadRoiTimeseries()"></select>
+        <select id="cost-center-filter" multiple size="4" onchange="loadRoiTimeseries(); loadReviewWorkload()"></select>
       </label>
       <span class="error" id="roi-timeseries-error"></span>
     </div>
@@ -581,6 +597,43 @@ async function loadInvoices() {
     showListError('invoices', e.message);
   }
 }
+function reviewWorkloadQuery() {
+  const parts = ['limit=' + encodeURIComponent(PAGE_SIZE)];
+  selectedEntities().forEach(e => parts.push('entity=' + encodeURIComponent(e)));
+  selectedCostCenters().forEach(c => parts.push('cost_center=' + encodeURIComponent(c)));
+  return '?' + parts.join('&');
+}
+async function loadReviewWorkload() {
+  const errorEl = document.getElementById('review-workload-error');
+  const hint = document.getElementById('review-workload-hint');
+  const table = document.getElementById('review-workload-table');
+  const tbody = document.getElementById('review-workload');
+  if (!tbody) return;
+  try {
+    const d = await api('/api/review-workload' + reviewWorkloadQuery());
+    if (errorEl) errorEl.textContent = '';
+    const invoices = d.invoices || [];
+    if (!invoices.length) {
+      hint.textContent = 'Keine Rechnungen mit offenen Findings für die gewählten Filter.';
+      table.style.display = 'none';
+      tbody.innerHTML = '';
+      return;
+    }
+    hint.textContent = '';
+    table.style.display = '';
+    tbody.innerHTML = invoices.map(i => `<tr>
+      <td>${esc(i.invoice_number)}</td>
+      <td>${esc(i.supplier)}</td>
+      <td>${esc(i.entity)}</td>
+      <td>${esc(i.cost_center || '—')}</td>
+      <td class="amount">${esc(i.open_finding_count)}</td>
+      <td class="amount">${money(i.open_amount)}</td>
+      <td class="amount">${money(i.open_review_cost_eur)}</td>
+    </tr>`).join('');
+  } catch (e) {
+    if (errorEl) errorEl.textContent = 'Fehler: ' + e.message;
+  }
+}
 function showAudit(invoiceId) {
   const input = document.getElementById('audit-invoice-id');
   if (input) input.value = invoiceId;
@@ -843,7 +896,7 @@ async function reconcileAll() {
 async function refresh() {
   await loadEntities();
   await loadCostCenters();
-  await Promise.all([loadMetrics(), loadFindings(), loadInvoices(), loadSupplierPrecision(), loadSupplierRules(), loadRuleImpact(), loadRoi(), loadRoiTimeseries(), loadDigest()]);
+  await Promise.all([loadMetrics(), loadFindings(), loadInvoices(), loadReviewWorkload(), loadSupplierPrecision(), loadSupplierRules(), loadRuleImpact(), loadRoi(), loadRoiTimeseries(), loadDigest()]);
 }
 initListControls();
 loadHealth(); refresh();
