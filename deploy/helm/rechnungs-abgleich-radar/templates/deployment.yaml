@@ -50,6 +50,41 @@ spec:
                   name: {{ include "radar.secretName" . }}
                   key: {{ .Values.auth.tokenKey }}
             {{- end }}
+            {{- if .Values.digest.webhookUrl }}
+            - name: RADAR_DIGEST_WEBHOOK_URL
+              value: {{ .Values.digest.webhookUrl | quote }}
+            {{- end }}
+            {{- if .Values.digest.schedule }}
+            - name: RADAR_DIGEST_SCHEDULE
+              value: {{ .Values.digest.schedule | quote }}
+            {{- end }}
+            {{- if .Values.digest.smtp.host }}
+            - name: RADAR_DIGEST_SMTP_HOST
+              value: {{ .Values.digest.smtp.host | quote }}
+            - name: RADAR_DIGEST_SMTP_PORT
+              value: {{ .Values.digest.smtp.port | quote }}
+            - name: RADAR_DIGEST_SMTP_USE_TLS
+              value: {{ .Values.digest.smtp.useTls | quote }}
+            {{- end }}
+            {{- if .Values.digest.smtp.user }}
+            - name: RADAR_DIGEST_SMTP_USER
+              value: {{ .Values.digest.smtp.user | quote }}
+            {{- end }}
+            {{- if .Values.digest.smtp.from }}
+            - name: RADAR_DIGEST_SMTP_FROM
+              value: {{ .Values.digest.smtp.from | quote }}
+            {{- end }}
+            {{- if .Values.digest.smtp.to }}
+            - name: RADAR_DIGEST_SMTP_TO
+              value: {{ .Values.digest.smtp.to | quote }}
+            {{- end }}
+            {{- if or .Values.digest.smtp.password .Values.digest.smtp.existingSecret }}
+            - name: RADAR_DIGEST_SMTP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "radar.digestSecretName" . }}
+                  key: {{ .Values.digest.smtp.passwordKey }}
+            {{- end }}
           readinessProbe:
             httpGet:
               path: /healthz

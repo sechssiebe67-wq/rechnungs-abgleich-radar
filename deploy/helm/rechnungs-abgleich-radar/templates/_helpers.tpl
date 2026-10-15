@@ -34,3 +34,11 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- printf "%s-auth" (include "radar.fullname" .) -}}
 {{- end -}}
 {{- end -}}
+
+{{- define "radar.digestSecretName" -}}
+{{- if .Values.digest.smtp.existingSecret -}}
+{{- .Values.digest.smtp.existingSecret -}}
+{{- else -}}
+{{- printf "%s-digest" (include "radar.fullname" .) -}}
+{{- end -}}
+{{- end -}}

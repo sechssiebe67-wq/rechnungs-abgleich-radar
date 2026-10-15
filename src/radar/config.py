@@ -27,6 +27,13 @@ def _int_env(name: str, default: int) -> int:
         return default
 
 
+def _bool_env(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
 @dataclass
 class Settings:
     db_path: str = "radar.db"
@@ -36,6 +43,15 @@ class Settings:
     price_drift_pct: float = 2.0
     duplicate_window_days: int = 45
     api_token: str = ""
+    digest_webhook_url: str = ""
+    digest_smtp_host: str = ""
+    digest_smtp_port: int = 587
+    digest_smtp_user: str = ""
+    digest_smtp_password: str = ""
+    digest_smtp_from: str = ""
+    digest_smtp_to: str = ""
+    digest_smtp_use_tls: bool = True
+    digest_schedule: str = ""
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -47,6 +63,15 @@ class Settings:
             price_drift_pct=_float_env("RADAR_PRICE_DRIFT_PCT", 2.0),
             duplicate_window_days=_int_env("RADAR_DUPLICATE_WINDOW_DAYS", 45),
             api_token=os.environ.get("RADAR_API_TOKEN", ""),
+            digest_webhook_url=os.environ.get("RADAR_DIGEST_WEBHOOK_URL", ""),
+            digest_smtp_host=os.environ.get("RADAR_DIGEST_SMTP_HOST", ""),
+            digest_smtp_port=_int_env("RADAR_DIGEST_SMTP_PORT", 587),
+            digest_smtp_user=os.environ.get("RADAR_DIGEST_SMTP_USER", ""),
+            digest_smtp_password=os.environ.get("RADAR_DIGEST_SMTP_PASSWORD", ""),
+            digest_smtp_from=os.environ.get("RADAR_DIGEST_SMTP_FROM", ""),
+            digest_smtp_to=os.environ.get("RADAR_DIGEST_SMTP_TO", ""),
+            digest_smtp_use_tls=_bool_env("RADAR_DIGEST_SMTP_USE_TLS", True),
+            digest_schedule=os.environ.get("RADAR_DIGEST_SCHEDULE", ""),
         )
 
 

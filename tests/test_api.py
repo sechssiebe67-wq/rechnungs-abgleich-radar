@@ -10,17 +10,26 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(_HERE, "..", "src"))
 sys.path.insert(0, _HERE)
 
-from radar.app import create_server  # noqa: E402
+from radar.app import (  # noqa: E402
+    create_server,
+    digest_schedule_seconds,
+    start_digest_scheduler,
+)
 from radar.config import Settings  # noqa: E402
 from radar.db import Store  # noqa: E402
-from radar_test_support import temp_settings  # noqa: E402
+from radar_test_support import WebhookStub, temp_settings  # noqa: E402
 
 
 class ApiTestCase(unittest.TestCase):
     token = ""
 
     def setUp(self):
-        settings = temp_settings(host="127.0.0.1", port=0, api_token=self.token)
+        settings = temp_settings(
+            host="127.0.0.1",
+            port=0,
+            api_token=self.token,
+            **getattr(self, "extra_settings", {})
+        )
         self.server = create_server(settings)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -386,6 +395,62 @@ class SupplierPrecisionTests(ApiTestCase):
         self.assertIn("Precision pro Lieferant", raw)
         self.assertIn("supplier-precision", raw)
         self.assertIn("/api/stats/by-supplier", raw)
+
+
+class DigestSendApiTests(ApiTestCase):
+    def test_disabled_channels_are_skipped(self):
+        status, payload = self.json_request("POST", "/api/digest/weekly/send")
+        self.assertEqual(status, 200)
+        channels = {entry["channel"]: entry for entry in payload["channels"]}
+        self.assertEqual(set(channels), {"webhook", "email"})
+        for entry in payload["channels"]:
+            self.assertEqual(entry["status"], "skipped")
+            self.assertIn("detail", entry)
+
+
+class DigestSendWebhookApiTests(ApiTestCase):
+    def setUp(self):
+        self.stub = WebhookStub().start()
+        self.extra_settings = {"digest_webhook_url": self.stub.url}
+        super().setUp()
+
+    def tearDown(self):
+        super().tearDown()
+        self.stub.stop()
+
+    def test_webhook_channel_sent_with_stub(self):
+        status, payload = self.json_request("POST", "/api/digest/weekly/send")
+        self.assertEqual(status, 200)
+        channels = {entry["channel"]: entry for entry in payload["channels"]}
+        self.assertEqual(channels["webhook"]["status"], "sent")
+        self.assertEqual(channels["email"]["status"], "skipped")
+        self.assertEqual(len(self.stub.server.received), 1)
+
+
+class DigestSchedulerTests(unittest.TestCase):
+    def test_schedule_seconds_mapping(self):
+        self.assertEqual(digest_schedule_seconds("weekly"), 7 * 24 * 60 * 60)
+        self.assertEqual(digest_schedule_seconds("daily"), 24 * 60 * 60)
+        self.assertEqual(digest_schedule_seconds("WEEKLY"), 7 * 24 * 60 * 60)
+        self.assertIsNone(digest_schedule_seconds(""))
+        self.assertIsNone(digest_schedule_seconds("monthly"))
+
+    def test_scheduler_off_when_schedule_empty(self):
+        settings = temp_settings(digest_schedule="")
+        store = Store(settings.db_path)
+        store.init()
+        self.assertIsNone(start_digest_scheduler(store, settings))
+
+    def test_scheduler_starts_and_stops_cleanly(self):
+        settings = temp_settings(digest_schedule="weekly")
+        store = Store(settings.db_path)
+        store.init()
+        scheduler = start_digest_scheduler(store, settings)
+        self.assertIsNotNone(scheduler)
+        self.assertTrue(scheduler.thread.is_alive())
+        self.assertTrue(scheduler.thread.daemon)
+        scheduler.stop()
+        self.assertFalse(scheduler.thread.is_alive())
 
 
 class AuthTests(ApiTestCase):

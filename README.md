@@ -36,6 +36,15 @@ Umgebungsvariablen:
 | `RADAR_PRICE_DRIFT_PCT` | `2` | Schwelle für Preisdrift über akzeptierte Preise |
 | `RADAR_DUPLICATE_WINDOW_DAYS` | `45` | Zeitfenster für Duplikatverdacht |
 | `RADAR_API_TOKEN` | leer | Wenn gesetzt, ist die API per `Authorization: Bearer …` geschützt (`/healthz` bleibt offen) |
+| `RADAR_DIGEST_WEBHOOK_URL` | leer | Webhook (Slack/Mattermost-kompatibel) für den Digest-Versand; leer = Kanal aus |
+| `RADAR_DIGEST_SMTP_HOST` | leer | SMTP-Host für den E-Mail-Versand; leer = Kanal aus |
+| `RADAR_DIGEST_SMTP_PORT` | `587` | SMTP-Port |
+| `RADAR_DIGEST_SMTP_USER` | leer | SMTP-Benutzer (leer = keine Anmeldung) |
+| `RADAR_DIGEST_SMTP_PASSWORD` | leer | SMTP-Passwort (nur mit Benutzer) |
+| `RADAR_DIGEST_SMTP_FROM` | leer | Absenderadresse (fällt auf `RADAR_DIGEST_SMTP_USER` zurück) |
+| `RADAR_DIGEST_SMTP_TO` | leer | Empfängeradresse; zusammen mit Host aktiviert den Kanal |
+| `RADAR_DIGEST_SMTP_USE_TLS` | `true` | STARTTLS vor dem Versand |
+| `RADAR_DIGEST_SCHEDULE` | leer | In-Process-Scheduler: `weekly`, `daily` oder leer = aus |
 
 ## Tests
 
@@ -65,6 +74,7 @@ python3 -m unittest discover -s tests -v
 | `GET /api/findings?status=open&min_amount=` | Priorisierte Auffälligkeiten |
 | `POST /api/findings/:id/feedback` | `{"verdict": "confirmed"|"false_alarm"}` |
 | `GET /api/digest/weekly[.html]` | Wöchentlicher Digest als JSON/HTML |
+| `POST /api/digest/weekly/send` | Digest aktiv per Webhook/SMTP zustellen, liefert je Kanal `sent`/`skipped`/`error` |
 
 ### CSV-Format für Rechnungsimport
 
@@ -127,6 +137,47 @@ Regelprofile gezielt statt pauschal nachziehen.
 curl -sS http://localhost:8080/api/stats/by-supplier
 ```
 
+## Wöchentlicher Digest
+
+Der Wochen-Digest ist als JSON/HTML abrufbar und kann zusätzlich **aktiv
+zugestellt** werden — per Webhook (Slack-/Mattermost-kompatibles JSON mit
+Gesamtbetrag, Anzahl Findings und Top-5-Auffälligkeiten) und/oder per SMTP als
+HTML-E-Mail. Beide Kanäle sind unabhängig: Fällt einer aus (`error`), wird der
+andere trotzdem versucht; ein nicht konfigurierter Kanal meldet `skipped`.
+
+```sh
+# Webhook (Slack/Mattermost) aktivieren
+export RADAR_DIGEST_WEBHOOK_URL="$SLACK_WEBHOOK_URL"
+
+# Zusätzlich E-Mail per SMTP versenden
+export RADAR_DIGEST_SMTP_HOST=mail.example.com
+export RADAR_DIGEST_SMTP_PORT=587
+export RADAR_DIGEST_SMTP_USER=radar
+export RADAR_DIGEST_SMTP_PASSWORD=geheim
+export RADAR_DIGEST_SMTP_FROM=radar@example.com
+export RADAR_DIGEST_SMTP_TO=kreditoren@example.com
+
+# Zustellung manuell auslösen
+curl -sS -X POST http://localhost:8080/api/digest/weekly/send
+```
+
+Die Antwort listet je Kanal den Status:
+
+```json
+{
+  "channels": [
+    {"channel": "webhook", "status": "sent", "detail": "HTTP 200"},
+    {"channel": "email", "status": "sent", "detail": "sent to kreditoren@example.com"}
+  ]
+}
+```
+
+Ohne konfigurierte Kanäle antwortet der Endpoint weiterhin `200` und meldet
+beide Kanäle als `skipped`. Optional startet `RADAR_DIGEST_SCHEDULE=weekly`
+(bzw. `daily`) einen Daemon-Thread im Prozess, der den Digest regelmäßig
+zustellt; leer bedeutet aus, und der Thread wird beim Herunterfahren sauber
+beendet.
+
 ## Deployment
 
 - **Container:** `Dockerfile`, HTTP auf Port 8080, `GET /healthz`,
@@ -137,11 +188,21 @@ curl -sS http://localhost:8080/api/stats/by-supplier
   Das Image wird über `image.repository` und `image.digest` als
   `repository@digest` gerendert; Ingress über `ingress.enabled`, `ingress.host`,
   `ingress.className`.
+  Der Digest-Versand wird über `digest.webhookUrl`, `digest.schedule` und
+  `digest.smtp.*` (`host`, `port`, `user`, `from`, `to`, `useTls`) gesetzt. Das
+  SMTP-Passwort kommt aus `digest.smtp.password` (rendert ein Secret) oder aus
+  einem vorhandenen Secret über `digest.smtp.existingSecret` +
+  `digest.smtp.passwordKey`.
 
 ```sh
 helm template radar deploy/helm/rechnungs-abgleich-radar \
   --set image.digest=sha256:<digest> \
-  --set ingress.enabled=true --set ingress.host=radar.example.com --set ingress.className=nginx
+  --set ingress.enabled=true --set ingress.host=radar.example.com --set ingress.className=nginx \
+  --set digest.webhookUrl=https://example.invalid/hook \
+  --set digest.schedule=weekly \
+  --set digest.smtp.host=mail.example.com --set digest.smtp.from=radar@example.com \
+  --set digest.smtp.to=kreditoren@example.com \
+  --set digest.smtp.existingSecret=mein-smtp-secret
 ```
 
 ## Entwicklungspipeline

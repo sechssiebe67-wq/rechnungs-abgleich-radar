@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, unquote, urlparse
@@ -17,6 +18,7 @@ from . import __version__
 from .config import Settings
 from .db import Store
 from .digest import render_html, weekly_digest
+from .notify import deliver_digest
 from .ingest import (
     invoice_from_dict,
     invoices_from_csv,
@@ -339,6 +341,9 @@ class RadarHandler(BaseHTTPRequestHandler):
         html_body = render_html(weekly_digest(self.store)).encode("utf-8")
         self._send(200, html_body, "text/html; charset=utf-8")
 
+    def h_send_digest(self, params, query) -> None:
+        self._send_json(deliver_digest(self.store, self.settings))
+
 
 def build_router() -> Router:
     router = Router()
@@ -368,6 +373,7 @@ def build_router() -> Router:
     router.add("POST", "/api/findings/:id/feedback", RadarHandler.h_feedback)
     router.add("GET", "/api/digest/weekly", RadarHandler.h_digest)
     router.add("GET", "/api/digest/weekly.html", RadarHandler.h_digest_html)
+    router.add("POST", "/api/digest/weekly/send", RadarHandler.h_send_digest)
     return router
 
 
@@ -389,9 +395,66 @@ def create_server(
     return server
 
 
+_SCHEDULE_SECONDS = {
+    "weekly": 7 * 24 * 60 * 60,
+    "daily": 24 * 60 * 60,
+}
+
+
+def digest_schedule_seconds(schedule: str) -> Optional[int]:
+    """Translate a simplified schedule (``weekly``/``daily``) to seconds.
+
+    Returns ``None`` for an empty/unknown value, i.e. the scheduler stays off.
+    """
+    return _SCHEDULE_SECONDS.get((schedule or "").strip().lower())
+
+
+class DigestScheduler:
+    """Daemon thread that periodically delivers the digest in-process."""
+
+    def __init__(self, store: Store, settings: Settings, interval_seconds: int) -> None:
+        self._store = store
+        self._settings = settings
+        self._interval = interval_seconds
+        self._stop = threading.Event()
+        self.thread = threading.Thread(
+            target=self._run, name="digest-scheduler", daemon=True
+        )
+
+    def start(self) -> "DigestScheduler":
+        self.thread.start()
+        return self
+
+    def stop(self) -> None:
+        self._stop.set()
+        self.thread.join(timeout=5)
+
+    def _run(self) -> None:
+        while not self._stop.wait(self._interval):
+            try:
+                deliver_digest(self._store, self._settings)
+            except Exception as exc:  # pragma: no cover - keep the thread alive
+                sys.stderr.write("digest scheduler error: %s\n" % exc)
+
+
+def start_digest_scheduler(
+    store: Store, settings: Settings
+) -> Optional[DigestScheduler]:
+    """Start the digest scheduler when ``digest_schedule`` is configured.
+
+    Returns the running :class:`DigestScheduler` or ``None`` when the schedule
+    is empty/unknown.
+    """
+    interval = digest_schedule_seconds(settings.digest_schedule)
+    if interval is None:
+        return None
+    return DigestScheduler(store, settings, interval).start()
+
+
 def main() -> None:
     settings = Settings.from_env()
     server = create_server(settings)
+    scheduler = start_digest_scheduler(server.radar_store, settings)
     print(
         "Rechnungs-Abgleich-Radar %s listening on %s:%d (db=%s)"
         % (__version__, settings.host, settings.port, settings.db_path),
@@ -400,6 +463,10 @@ def main() -> None:
     try:
         server.serve_forever()
     except KeyboardInterrupt:  # pragma: no cover
+        pass
+    finally:
+        if scheduler is not None:
+            scheduler.stop()
         server.shutdown()
 
 
