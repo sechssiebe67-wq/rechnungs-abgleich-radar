@@ -26,6 +26,10 @@
   .metric .label { color:#8b949e; font-size:.8rem; }
   .muted { color:#8b949e; font-size:.8rem; }
   .row-actions { display:flex; gap:.4rem; }
+  .controls { display:flex; gap:.75rem; align-items:center; flex-wrap:wrap; margin:.5rem 0; }
+  .controls select { background:#0d1117; color:#e6edf3; border:1px solid #30363d; border-radius:6px; padding:.3rem .5rem; font-size:.8rem; }
+  .controls button:disabled { opacity:.45; cursor:not-allowed; }
+  .error { color:#f85149; font-size:.8rem; }
   footer { text-align:center; color:#8b949e; font-size:.8rem; padding:2rem; }
   a { color:#58a6ff; }
 </style>
@@ -52,9 +56,31 @@
     <h2>Offene Auffälligkeiten <span class="muted">(priorisiert nach Abweichungsbetrag)</span></h2>
     <p><a id="digest-html-link" href="/api/digest/weekly.html" target="_blank" rel="noreferrer">Wochen-Digest öffnen</a> ·
        <a id="digest-json-link" href="/api/digest/weekly" target="_blank" rel="noreferrer">als JSON</a></p>
+    <div class="controls">
+      <label class="muted">Sortierung <select id="findings-sort" onchange="setSort('findings', this.value)"></select></label>
+      <span class="muted" id="findings-range">…</span>
+      <button class="secondary" id="findings-prev" onclick="pageList('findings', -1)">Zurück</button>
+      <button class="secondary" id="findings-next" onclick="pageList('findings', 1)">Weiter</button>
+      <span class="error" id="findings-error"></span>
+    </div>
     <table>
       <thead><tr><th>Art</th><th>Begründung</th><th class="amount">Betrag</th><th>Feedback</th></tr></thead>
       <tbody id="findings"><tr><td colspan="4" class="muted">Lade …</td></tr></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Rechnungen <span class="muted">(Liste mit Sortierung und Seitenumschaltung)</span></h2>
+    <div class="controls">
+      <label class="muted">Sortierung <select id="invoices-sort" onchange="setSort('invoices', this.value)"></select></label>
+      <span class="muted" id="invoices-range">…</span>
+      <button class="secondary" id="invoices-prev" onclick="pageList('invoices', -1)">Zurück</button>
+      <button class="secondary" id="invoices-next" onclick="pageList('invoices', 1)">Weiter</button>
+      <span class="error" id="invoices-error"></span>
+    </div>
+    <table>
+      <thead><tr><th>Rechnungsnr.</th><th>Lieferant</th><th>Gesellschaft</th><th>Datum</th><th class="amount">Findings</th><th class="amount">Offen</th></tr></thead>
+      <tbody id="invoices"><tr><td colspan="6" class="muted">Lade …</td></tr></tbody>
     </table>
   </section>
 
@@ -127,6 +153,13 @@
 
   <section>
     <h2>Lieferanten-Regeln <span class="muted">(leere Felder = globaler Default)</span></h2>
+    <div class="controls">
+      <label class="muted">Sortierung <select id="rules-sort" onchange="setSort('rules', this.value)"></select></label>
+      <span class="muted" id="rules-range">…</span>
+      <button class="secondary" id="rules-prev" onclick="pageList('rules', -1)">Zurück</button>
+      <button class="secondary" id="rules-next" onclick="pageList('rules', 1)">Weiter</button>
+      <span class="error" id="rules-error"></span>
+    </div>
     <table>
       <thead><tr><th>Lieferant</th><th>Toleranz %</th><th>Drift %</th><th>Duplikat-Fenster (Tage)</th><th>Freibetrag</th><th></th></tr></thead>
       <tbody id="supplier-rules"><tr><td colspan="6" class="muted">Lade …</td></tr></tbody>
@@ -152,6 +185,92 @@ function esc(s) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+const PAGE_SIZE = 25;
+const LIST_SORTS = {
+  findings: ['amount_desc', 'amount_asc', 'created_at_desc', 'created_at_asc'],
+  invoices: ['created_at_desc', 'created_at_asc', 'invoice_number_asc', 'invoice_number_desc'],
+  rules: ['supplier_asc', 'supplier_desc', 'updated_at_desc', 'updated_at_asc'],
+};
+const SORT_LABELS = {
+  amount_desc: 'Betrag ↓', amount_asc: 'Betrag ↑',
+  created_at_desc: 'Erstellt ↓', created_at_asc: 'Erstellt ↑',
+  invoice_number_asc: 'Rechnungsnr. ↑', invoice_number_desc: 'Rechnungsnr. ↓',
+  supplier_asc: 'Lieferant ↑', supplier_desc: 'Lieferant ↓',
+  updated_at_desc: 'Geändert ↓', updated_at_asc: 'Geändert ↑',
+};
+const listState = {
+  findings: { sort: 'amount_desc', limit: PAGE_SIZE, offset: 0 },
+  invoices: { sort: 'created_at_desc', limit: PAGE_SIZE, offset: 0 },
+  rules: { sort: 'supplier_asc', limit: PAGE_SIZE, offset: 0 },
+};
+
+function buildListQuery(state) {
+  const parts = [];
+  const extra = state.extra || {};
+  Object.keys(extra).forEach(function (key) {
+    const raw = extra[key];
+    if (raw === null || raw === undefined) return;
+    const values = Array.isArray(raw) ? raw : [raw];
+    values.forEach(function (value) {
+      if (value !== null && value !== undefined && value !== '') {
+        parts.push(encodeURIComponent(key) + '=' + encodeURIComponent(value));
+      }
+    });
+  });
+  if (state.sort) parts.push('sort=' + encodeURIComponent(state.sort));
+  if (state.limit !== null && state.limit !== undefined) parts.push('limit=' + encodeURIComponent(state.limit));
+  if (state.offset !== null && state.offset !== undefined) parts.push('offset=' + encodeURIComponent(state.offset));
+  return parts.length ? '?' + parts.join('&') : '';
+}
+function rangeLabel(data) {
+  const total = data.total_count || 0;
+  const count = data.count || 0;
+  const offset = data.offset || 0;
+  return total ? (offset + 1) + '–' + (offset + count) + ' von ' + total : '0–0 von 0';
+}
+function fillSortSelect(id, options, selected) {
+  const select = document.getElementById(id);
+  if (!select) return;
+  select.innerHTML = options
+    .map(o => `<option value="${esc(o)}">${esc(SORT_LABELS[o] || o)}</option>`)
+    .join('');
+  select.value = selected;
+}
+function updatePager(prefix, data) {
+  const state = listState[prefix];
+  if (data.sort) state.sort = data.sort;
+  document.getElementById(prefix + '-range').textContent = rangeLabel(data);
+  const offset = data.offset || 0;
+  const count = data.count || 0;
+  const total = data.total_count || 0;
+  document.getElementById(prefix + '-prev').disabled = offset <= 0;
+  document.getElementById(prefix + '-next').disabled = offset + count >= total;
+}
+function showListError(prefix, message) {
+  const el = document.getElementById(prefix + '-error');
+  if (el) el.textContent = message ? 'Fehler: ' + message : '';
+}
+function reloadList(prefix) {
+  if (prefix === 'findings') return loadFindings();
+  if (prefix === 'invoices') return loadInvoices();
+  return loadSupplierRules();
+}
+function setSort(prefix, value) {
+  listState[prefix].sort = value;
+  listState[prefix].offset = 0;
+  return reloadList(prefix);
+}
+function pageList(prefix, delta) {
+  const state = listState[prefix];
+  state.offset = Math.max(0, state.offset + delta * state.limit);
+  return reloadList(prefix);
+}
+function initListControls() {
+  fillSortSelect('findings-sort', LIST_SORTS.findings, listState.findings.sort);
+  fillSortSelect('invoices-sort', LIST_SORTS.invoices, listState.invoices.sort);
+  fillSortSelect('rules-sort', LIST_SORTS.rules, listState.rules.sort);
 }
 
 async function loadHealth() {
@@ -198,16 +317,43 @@ async function loadDigest() {
   if (jsonLink) jsonLink.href = '/api/digest/weekly' + entityQuery();
 }
 async function loadFindings() {
-  const d = await api('/api/findings?status=open' + (entityQuery() ? '&' + entityQuery().slice(1) : ''));
-  const rows = d.findings.map(f => `<tr>
-    <td>${esc(f.finding_type)}</td>
-    <td>${esc(f.message)}<div class="muted">Ref: ${esc(f.reference_value || '')} · Ist: ${esc(f.actual_value || '')}</div></td>
-    <td class="amount">${money(f.amount)}</td>
-    <td><div class="row-actions">
-      <button onclick="feedback(${f.id},'confirmed')">bestätigt</button>
-      <button class="secondary" onclick="feedback(${f.id},'false_alarm')">Fehlalarm</button>
-    </div></td></tr>`).join('');
-  document.getElementById('findings').innerHTML = rows || '<tr><td colspan="4" class="muted">Keine offenen Auffälligkeiten.</td></tr>';
+  const state = listState.findings;
+  try {
+    const d = await api('/api/findings' + buildListQuery(Object.assign({}, state, {
+      extra: { status: 'open', entity: selectedEntities() },
+    })));
+    showListError('findings', '');
+    const rows = d.findings.map(f => `<tr>
+      <td>${esc(f.finding_type)}</td>
+      <td>${esc(f.message)}<div class="muted">Ref: ${esc(f.reference_value || '')} · Ist: ${esc(f.actual_value || '')}</div></td>
+      <td class="amount">${money(f.amount)}</td>
+      <td><div class="row-actions">
+        <button onclick="feedback(${f.id},'confirmed')">bestätigt</button>
+        <button class="secondary" onclick="feedback(${f.id},'false_alarm')">Fehlalarm</button>
+      </div></td></tr>`).join('');
+    document.getElementById('findings').innerHTML = rows || '<tr><td colspan="4" class="muted">Keine offenen Auffälligkeiten.</td></tr>';
+    updatePager('findings', d);
+  } catch (e) {
+    showListError('findings', e.message);
+  }
+}
+async function loadInvoices() {
+  try {
+    const d = await api('/api/invoices' + buildListQuery(listState.invoices));
+    showListError('invoices', '');
+    const rows = d.invoices.map(i => `<tr>
+      <td>${esc(i.invoice_number)}</td>
+      <td>${esc(i.supplier)}</td>
+      <td>${esc(i.entity)}</td>
+      <td>${esc(i.invoice_date || '—')}</td>
+      <td class="amount">${esc(i.finding_count)}</td>
+      <td class="amount">${money(i.open_amount)}</td>
+    </tr>`).join('');
+    document.getElementById('invoices').innerHTML = rows || '<tr><td colspan="6" class="muted">Keine Rechnungen vorhanden.</td></tr>';
+    updatePager('invoices', d);
+  } catch (e) {
+    showListError('invoices', e.message);
+  }
 }
 async function loadSupplierPrecision() {
   const d = await api('/api/stats/by-supplier' + entityQuery());
@@ -339,16 +485,22 @@ async function createRef() {
 }
 function fmt(v) { return v == null ? '—' : esc(v); }
 async function loadSupplierRules() {
-  const d = await api('/api/supplier-rules');
-  const rows = d.supplier_rules.map(r => `<tr>
-    <td>${esc(r.supplier)}</td>
-    <td>${fmt(r.tolerance_pct)}</td>
-    <td>${fmt(r.price_drift_pct)}</td>
-    <td>${fmt(r.duplicate_window_days)}</td>
-    <td class="amount">${r.min_amount_eur == null ? '—' : money(r.min_amount_eur)}</td>
-    <td><button class="secondary" data-supplier="${esc(r.supplier)}" onclick="deleteRule(this)">löschen</button></td>
-  </tr>`).join('');
-  document.getElementById('supplier-rules').innerHTML = rows || '<tr><td colspan="6" class="muted">Keine Lieferanten-Regeln hinterlegt.</td></tr>';
+  try {
+    const d = await api('/api/supplier-rules' + buildListQuery(listState.rules));
+    showListError('rules', '');
+    const rows = d.supplier_rules.map(r => `<tr>
+      <td>${esc(r.supplier)}</td>
+      <td>${fmt(r.tolerance_pct)}</td>
+      <td>${fmt(r.price_drift_pct)}</td>
+      <td>${fmt(r.duplicate_window_days)}</td>
+      <td class="amount">${r.min_amount_eur == null ? '—' : money(r.min_amount_eur)}</td>
+      <td><button class="secondary" data-supplier="${esc(r.supplier)}" onclick="deleteRule(this)">löschen</button></td>
+    </tr>`).join('');
+    document.getElementById('supplier-rules').innerHTML = rows || '<tr><td colspan="6" class="muted">Keine Lieferanten-Regeln hinterlegt.</td></tr>';
+    updatePager('rules', d);
+  } catch (e) {
+    showListError('rules', e.message);
+  }
 }
 async function createRule() {
   await api('/api/supplier-rules', {method:'POST', headers:{'Content-Type':'application/json'}, body: document.getElementById('rule').value});
@@ -364,8 +516,9 @@ async function reconcileAll() {
 }
 async function refresh() {
   await loadEntities();
-  await Promise.all([loadMetrics(), loadFindings(), loadSupplierPrecision(), loadSupplierRules(), loadRuleImpact(), loadRoi(), loadDigest()]);
+  await Promise.all([loadMetrics(), loadFindings(), loadInvoices(), loadSupplierPrecision(), loadSupplierRules(), loadRuleImpact(), loadRoi(), loadDigest()]);
 }
+initListControls();
 loadHealth(); refresh();
 </script>
 </body>
