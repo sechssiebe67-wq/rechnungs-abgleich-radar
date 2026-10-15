@@ -35,6 +35,7 @@ Umgebungsvariablen:
 | `RADAR_TOLERANCE_PCT` | `2` | Toleranz für Preis-/Mengenabweichung in Prozent |
 | `RADAR_PRICE_DRIFT_PCT` | `2` | Schwelle für Preisdrift über akzeptierte Preise |
 | `RADAR_DUPLICATE_WINDOW_DAYS` | `45` | Zeitfenster für Duplikatverdacht |
+| `RADAR_DEFAULT_ENTITY` | `default` | Gesellschaft, der neue Rechnungen ohne `entity`-Feld zugeordnet werden |
 | `RADAR_REVIEW_MINUTES_PER_FINDING` | `4.0` | Angenommene Prüfzeit pro bestätigtem Finding in Minuten (≥ 0) — Basis des ROI-Nachweises |
 | `RADAR_REVIEW_HOURLY_RATE_EUR` | `45.0` | Angenommener Stundensatz in EUR (≥ 0) zur Bewertung des vermiedenen Prüfaufwands |
 | `RADAR_API_TOKEN` | leer | Wenn gesetzt, ist die API per `Authorization: Bearer …` geschützt (`/healthz` bleibt offen) |
@@ -61,9 +62,10 @@ python3 -m unittest discover -s tests -v
 | `GET /healthz` | Health-Probe |
 | `GET /` | Web-Oberfläche |
 | `GET /api/stats` | Kennzahlen inkl. Precision aus Feedback |
-| `GET /api/stats/by-supplier` | Precision, Findings und offenes Volumen je Lieferant inkl. angewendeter Regeln |
-| `GET /api/stats/rule-impact` | Vorher/Nachher-Vergleich der Findings und Precision je Lieferant vor/nach dem letzten Regel-Update |
-| `GET /api/stats/roi` | ROI-Nachweis: vermiedener Prüfaufwand und vermiedene Fehlzahlungen aus dem Feedback, je Lieferant, je Artikel und gesamt (`?review_minutes=`, `?hourly_rate=`, `?article_limit=`) |
+| `GET /api/stats/by-supplier` | Precision, Findings und offenes Volumen je Lieferant inkl. angewendeter Regeln (`?entity=`) |
+| `GET /api/stats/rule-impact` | Vorher/Nachher-Vergleich der Findings und Precision je Lieferant vor/nach dem letzten Regel-Update (`?entity=`) |
+| `GET /api/stats/roi` | ROI-Nachweis: vermiedener Prüfaufwand und vermiedene Fehlzahlungen aus dem Feedback, je Lieferant, je Gesellschaft, je Artikel und gesamt (`?review_minutes=`, `?hourly_rate=`, `?article_limit=`, `?entity=`) |
+| `GET /api/entities` | Sortierte Liste der in Rechnungen vorkommenden Gesellschaften |
 | `POST /api/suppliers` | Lieferant anlegen |
 | `GET /api/supplier-rules` | Liste aller Lieferanten-Regeln |
 | `GET /api/supplier-rules/:supplier` | Einzelne Regel oder `404` |
@@ -75,19 +77,44 @@ python3 -m unittest discover -s tests -v
 | `POST /api/invoices/import` | Rechnungen per CSV (ein Datensatz pro Position) importieren |
 | `GET /api/invoices/:id` | Nachvollziehbarkeit: was wurde verglichen, was wich ab |
 | `POST /api/reconcile` | Alle Rechnungen (oder `{"invoice_id": …}`) neu abgleichen |
-| `GET /api/findings?status=open&min_amount=` | Priorisierte Auffälligkeiten |
+| `GET /api/findings?status=open&min_amount=&entity=` | Priorisierte Auffälligkeiten |
 | `POST /api/findings/:id/feedback` | `{"verdict": "confirmed"|"false_alarm"}` |
-| `GET /api/digest/weekly[.html]` | Wöchentlicher Digest als JSON/HTML |
-| `POST /api/digest/weekly/send` | Digest aktiv per Webhook/SMTP zustellen, liefert je Kanal `sent`/`skipped`/`error` |
+| `GET /api/digest/weekly[.html]?entity=` | Wöchentlicher Digest als JSON/HTML, optional auf Gesellschaften gefiltert |
+| `POST /api/digest/weekly/send` | Digest aktiv per Webhook/SMTP zustellen (`{"entities": ["DE01"]}`), liefert je Kanal `sent`/`skipped`/`error` |
+
+### Gesellschaften (Multi-Gesellschafts-Rollup)
+
+Jede Rechnung trägt eine **Gesellschaft** (`entity`, Default `default`). Gruppen-
+und Holding-Kreditorenbuchhaltungen können damit den Nutzen je Gesellschaft und
+konsolidiert ausweisen. Der Filter `?entity=` darf mehrfach angegeben werden
+(`?entity=DE01&entity=DE02`); `GET /api/entities` liefert die verfügbaren
+Gesellschaften sortiert.
+
+- Beim Anlegen einer Rechnung (`POST /api/invoices`) wird `entity` aus dem
+  Payload gelesen; fehlt es, greift `RADAR_DEFAULT_ENTITY` (Fallback `default`).
+- Eine bestehende SQLite-Datei ohne `entity`-Spalte wird beim Start
+  rückwärtskompatibel migriert (idempotent); Bestandsrechnungen erhalten
+  `default`.
+- `?entity=` filtert ROI, `by-supplier`, `rule-impact`, `findings` und den
+  Digest. Ein unbekannter Name ist keine Fehlbedienung: der ROI-Endpoint
+  antwortet weiterhin `200` mit leerer `entities`-Liste und Nullwerten.
+
+```sh
+curl -sS http://localhost:8080/api/entities
+curl -sS 'http://localhost:8080/api/stats/roi?entity=DE01&entity=DE02'
+curl -sS 'http://localhost:8080/api/findings?status=open&entity=DE01'
+```
 
 ### CSV-Format für Rechnungsimport
 
 ```csv
-invoice_number,supplier,invoice_date,position,article,quantity,unit_price,po_number
-RE-1001,ACME GmbH,2026-01-15,1,Schraube M8,100,0.42,PO-77
+invoice_number,supplier,invoice_date,position,article,quantity,unit_price,po_number,entity
+RE-1001,ACME GmbH,2026-01-15,1,Schraube M8,100,0.42,PO-77,DE01
 ```
 
-Beispieldaten liegen unter [`examples/`](examples/).
+Die Spalte `entity` ist optional; fehlt sie (oder bleibt ein Wert leer), wird
+`RADAR_DEFAULT_ENTITY` verwendet. Beispieldaten liegen unter
+[`examples/`](examples/).
 
 ### Lieferanten-Regeln
 
@@ -187,7 +214,7 @@ Treffer entspricht einer manuell vermiedenen Prüfung.
 Summe der Beträge bestätigter Findings (`confirmed_amount`) weist zusätzlich die
 vermiedenen Fehlzahlungen aus.
 
-Der Report liefert vier Blöcke:
+Der Report liefert fünf Blöcke:
 
 - `parameters`: die wirksamen Annahmen `review_minutes_per_finding` und
   `hourly_rate_eur` (aus `RADAR_REVIEW_MINUTES_PER_FINDING` /
@@ -195,6 +222,12 @@ Der Report liefert vier Blöcke:
 - `suppliers`: je Lieferant `findings`, `confirmed`, `false_alarm`, `open`,
   `open_amount`, `precision`, `confirmed_amount`, `avoided_review_minutes` und
   `avoided_review_cost_eur`.
+- `entities`: konsolidierter Rollup je **Gesellschaft** mit exakt derselben
+  Feldstruktur wie `suppliers` (`entity` statt `supplier`). Sortiert absteigend
+  nach `avoided_review_cost_eur` (dann `confirmed_amount`). Mit `?entity=` wird
+  der gesamte Report auf die gewählten Gesellschaften gefiltert; `suppliers`,
+  `articles` und `totals` beziehen sich dann nur darauf. Ohne Filter erscheinen
+  alle Gesellschaften, `totals` entspricht der Summe über sie.
 - `articles`: zusätzliche **Artikel-/Positions-Aufschlüsselung**. Jeder Eintrag
   gruppiert die Findings eines Artikels je Lieferant (Artikel über
   `normalize_text` normalisiert, Anzeigename aus der Rechnungsposition; Findings
@@ -219,6 +252,9 @@ curl -sS 'http://localhost:8080/api/stats/roi?review_minutes=10&hourly_rate=60'
 
 # Nur die 10 teuersten Artikel (0 = leere Liste)
 curl -sS 'http://localhost:8080/api/stats/roi?article_limit=10'
+
+# Nur einzelne Gesellschaften (mehrfach erlaubt)
+curl -sS 'http://localhost:8080/api/stats/roi?entity=DE01&entity=DE02'
 ```
 
 ```json
@@ -247,6 +283,20 @@ curl -sS 'http://localhost:8080/api/stats/roi?article_limit=10'
       "open": 0,
       "open_amount": 0.0,
       "precision": 0.8,
+      "confirmed_amount": 64.0,
+      "avoided_review_minutes": 16.0,
+      "avoided_review_cost_eur": 12.0
+    }
+  ],
+  "entities": [
+    {
+      "entity": "DE01",
+      "findings": 7,
+      "confirmed": 4,
+      "false_alarm": 3,
+      "open": 0,
+      "open_amount": 0.0,
+      "precision": 0.5714,
       "confirmed_amount": 64.0,
       "avoided_review_minutes": 16.0,
       "avoided_review_cost_eur": 12.0
@@ -285,9 +335,14 @@ Tabelle.
 
 Der Wochen-Digest ist als JSON/HTML abrufbar und kann zusätzlich **aktiv
 zugestellt** werden — per Webhook (Slack-/Mattermost-kompatibles JSON mit
-Gesamtbetrag, Anzahl Findings und Top-5-Auffälligkeiten) und/oder per SMTP als
-HTML-E-Mail. Beide Kanäle sind unabhängig: Fällt einer aus (`error`), wird der
-andere trotzdem versucht; ein nicht konfigurierter Kanal meldet `skipped`.
+Gesamtbetrag, Anzahl Findings, berücksichtigten Gesellschaften `entities` und
+Top-5-Auffälligkeiten) und/oder per SMTP als HTML-E-Mail. Beide Kanäle sind
+unabhängig: Fällt einer aus (`error`), wird der andere trotzdem versucht; ein
+nicht konfigurierter Kanal meldet `skipped`. Über `?entity=` (Abruf) bzw.
+`{"entities": ["DE01"]}` (Versand) lässt sich der Digest auf Gesellschaften
+eingrenzen; HTML-Kopf und die Spalte „Gesellschaft“ weisen sie je Finding aus.
+Im Webhook-Payload sind die berücksichtigten Gesellschaften im Feld `entities`
+enthalten.
 
 ```sh
 # Webhook (Slack/Mattermost) aktivieren
@@ -301,8 +356,10 @@ export RADAR_DIGEST_SMTP_PASSWORD=geheim
 export RADAR_DIGEST_SMTP_FROM=radar@example.com
 export RADAR_DIGEST_SMTP_TO=kreditoren@example.com
 
-# Zustellung manuell auslösen
-curl -sS -X POST http://localhost:8080/api/digest/weekly/send
+# Zustellung manuell auslösen (optional auf Gesellschaften begrenzt)
+curl -sS -X POST http://localhost:8080/api/digest/weekly/send \
+  -H 'Content-Type: application/json' \
+  -d '{"entities": ["DE01"]}'
 ```
 
 Die Antwort listet je Kanal den Status:
@@ -336,7 +393,9 @@ beendet.
   `digest.smtp.*` (`host`, `port`, `user`, `from`, `to`, `useTls`) gesetzt. Das
   SMTP-Passwort kommt aus `digest.smtp.password` (rendert ein Secret) oder aus
   einem vorhandenen Secret über `digest.smtp.existingSecret` +
-  `digest.smtp.passwordKey`.
+  `digest.smtp.passwordKey`. Die Vorgabe-Gesellschaft für Rechnungen ohne
+  `entity` wird über `config.defaultEntity` (Env `RADAR_DEFAULT_ENTITY`)
+  durchgereicht.
 
 ```sh
 helm template radar deploy/helm/rechnungs-abgleich-radar \

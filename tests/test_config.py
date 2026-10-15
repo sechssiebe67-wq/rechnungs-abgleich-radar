@@ -89,5 +89,19 @@ class RoiConfigTests(unittest.TestCase):
             self.assertEqual(Settings.from_env().review_hourly_rate_eur, 45.0)
 
 
+class DefaultEntityConfigTests(unittest.TestCase):
+    def test_default(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(Settings.from_env().default_entity, "default")
+
+    def test_from_env(self):
+        with mock.patch.dict(os.environ, {"RADAR_DEFAULT_ENTITY": "DE01"}, clear=True):
+            self.assertEqual(Settings.from_env().default_entity, "DE01")
+
+    def test_blank_falls_back_to_default(self):
+        with mock.patch.dict(os.environ, {"RADAR_DEFAULT_ENTITY": "  "}, clear=True):
+            self.assertEqual(Settings.from_env().default_entity, "default")
+
+
 if __name__ == "__main__":
     unittest.main()

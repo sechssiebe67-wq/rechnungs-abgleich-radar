@@ -70,6 +70,8 @@ class Settings:
     digest_schedule: str = ""
     review_minutes_per_finding: float = 4.0
     review_hourly_rate_eur: float = 45.0
+    # Society assigned to new invoices that carry no explicit ``entity``.
+    default_entity: str = "default"
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -96,6 +98,10 @@ class Settings:
             review_hourly_rate_eur=_non_negative_float_env(
                 "RADAR_REVIEW_HOURLY_RATE_EUR", 45.0
             ),
+            default_entity=(
+                os.environ.get("RADAR_DEFAULT_ENTITY", "default") or ""
+            ).strip()
+            or "default",
         )
 
 

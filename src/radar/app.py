@@ -51,6 +51,23 @@ def _non_negative_query_float(
     return value
 
 
+def _query_list(query: Dict[str, List[str]], name: str) -> List[str]:
+    """Read an optional, repeatable query parameter as a sorted-by-input list.
+
+    Empty values are ignored and duplicates collapsed, so ``?entity=DE01``,
+    ``?entity=DE01&entity=DE02`` and ``?entity=`` all behave predictably for
+    the multi-entity filters.
+    """
+    seen: set = set()
+    values: List[str] = []
+    for raw in query.get(name, []):
+        value = (raw or "").strip()
+        if value and value not in seen:
+            seen.add(value)
+            values.append(value)
+    return values
+
+
 def _non_negative_query_int(
     query: Dict[str, List[str]], name: str
 ) -> Optional[int]:
@@ -208,22 +225,28 @@ class RadarHandler(BaseHTTPRequestHandler):
         self._send_json(self.store.stats())
 
     def h_stats_by_supplier(self, params, query) -> None:
-        suppliers = self.store.stats_by_supplier(self.settings)
+        entities = _query_list(query, "entity") or None
+        suppliers = self.store.stats_by_supplier(self.settings, entities)
         self._send_json({"suppliers": suppliers, "count": len(suppliers)})
 
     def h_rule_impact(self, params, query) -> None:
-        suppliers = self.store.rule_impact(self.settings)
+        entities = _query_list(query, "entity") or None
+        suppliers = self.store.rule_impact(self.settings, entities)
         self._send_json({"suppliers": suppliers, "count": len(suppliers)})
 
     def h_roi(self, params, query) -> None:
         review_minutes = _non_negative_query_float(query, "review_minutes")
         hourly_rate = _non_negative_query_float(query, "hourly_rate")
         article_limit = _non_negative_query_int(query, "article_limit")
+        entities = _query_list(query, "entity") or None
         self._send_json(
             self.store.roi_report(
-                self.settings, review_minutes, hourly_rate, article_limit
+                self.settings, review_minutes, hourly_rate, article_limit, entities
             )
         )
+
+    def h_entities(self, params, query) -> None:
+        self._send_json({"entities": self.store.list_entities()})
 
     def h_suppliers(self, params, query) -> None:
         self._send_json({"suppliers": self.store.list_suppliers()})
@@ -329,7 +352,7 @@ class RadarHandler(BaseHTTPRequestHandler):
         data = self._json_body()
         if not data.get("invoice_number") or not data.get("supplier"):
             raise ValueError("invoice_number and supplier are required")
-        invoice = invoice_from_dict(data)
+        invoice = invoice_from_dict(data, self.settings.default_entity)
         invoice_id = self.store.add_invoice(invoice)
         finding_ids = reconcile_invoice(self.store, invoice_id, self.settings)
         self._send_json(
@@ -338,7 +361,7 @@ class RadarHandler(BaseHTTPRequestHandler):
         )
 
     def h_import_invoices(self, params, query) -> None:
-        invoices = invoices_from_csv(self._text_body())
+        invoices = invoices_from_csv(self._text_body(), self.settings.default_entity)
         ids: List[int] = []
         findings = 0
         for invoice in invoices:
@@ -371,10 +394,12 @@ class RadarHandler(BaseHTTPRequestHandler):
         status = query.get("status", [None])[0]
         min_amount = query.get("min_amount", [None])[0]
         invoice_id = query.get("invoice_id", [None])[0]
+        entities = _query_list(query, "entity") or None
         findings = self.store.list_findings(
             status=status,
             min_amount=float(min_amount) if min_amount else None,
             invoice_id=int(invoice_id) if invoice_id else None,
+            entities=entities,
         )
         total = round(sum(float(f["amount"]) for f in findings), 2)
         self._send_json({"findings": findings, "total_amount": total, "count": len(findings)})
@@ -390,14 +415,28 @@ class RadarHandler(BaseHTTPRequestHandler):
         self._send_json({"status": "updated", "finding_id": int(params["id"]), "verdict": verdict})
 
     def h_digest(self, params, query) -> None:
-        self._send_json(weekly_digest(self.store))
+        entities = _query_list(query, "entity") or None
+        self._send_json(weekly_digest(self.store, entities=entities))
 
     def h_digest_html(self, params, query) -> None:
-        html_body = render_html(weekly_digest(self.store)).encode("utf-8")
+        entities = _query_list(query, "entity") or None
+        html_body = render_html(
+            weekly_digest(self.store, entities=entities)
+        ).encode("utf-8")
         self._send(200, html_body, "text/html; charset=utf-8")
 
     def h_send_digest(self, params, query) -> None:
-        self._send_json(deliver_digest(self.store, self.settings))
+        data = self._json_body()
+        raw_entities = data.get("entities") if isinstance(data, dict) else None
+        if isinstance(raw_entities, str):
+            raw_entities = [raw_entities]
+        if raw_entities:
+            entities = [str(e).strip() for e in raw_entities if str(e).strip()]
+        else:
+            entities = []
+        self._send_json(
+            deliver_digest(self.store, self.settings, entities or None)
+        )
 
 
 def build_router() -> Router:
@@ -408,6 +447,7 @@ def build_router() -> Router:
     router.add("GET", "/api/stats/by-supplier", RadarHandler.h_stats_by_supplier)
     router.add("GET", "/api/stats/rule-impact", RadarHandler.h_rule_impact)
     router.add("GET", "/api/stats/roi", RadarHandler.h_roi)
+    router.add("GET", "/api/entities", RadarHandler.h_entities)
     router.add("GET", "/api/suppliers", RadarHandler.h_suppliers)
     router.add("POST", "/api/suppliers", RadarHandler.h_add_supplier)
     router.add("GET", "/api/supplier-rules", RadarHandler.h_supplier_rules)

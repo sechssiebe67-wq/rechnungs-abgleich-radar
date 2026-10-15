@@ -1,5 +1,5 @@
-invoice_number,supplier,invoice_date,position,article,quantity,unit_price,po_number
-RE-1001,ACME GmbH,2026-01-15,1,Schraube M8,100,0.42,PO-77
-RE-1001,ACME GmbH,2026-01-15,2,Mutter M8,50,0.11,PO-77
-RE-1002,Beta AG,2026-01-16,1,Stift 3mm,500,0.09,
-RE-1003,ACME GmbH,2026-01-17,1,Schraube M8,120,0.45,PO-77
+invoice_number,supplier,invoice_date,position,article,quantity,unit_price,po_number,entity
+RE-1001,ACME GmbH,2026-01-15,1,Schraube M8,100,0.42,PO-77,DE01
+RE-1001,ACME GmbH,2026-01-15,2,Mutter M8,50,0.11,PO-77,DE01
+RE-1002,Beta AG,2026-01-16,1,Stift 3mm,500,0.09,,DE02
+RE-1003,ACME GmbH,2026-01-17,1,Schraube M8,120,0.45,PO-77,DE01

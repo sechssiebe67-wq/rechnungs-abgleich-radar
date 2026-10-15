@@ -4,21 +4,35 @@ from __future__ import annotations
 
 import html
 from datetime import datetime, timezone
-from typing import List
+from typing import List, Optional
 
 from .db import Store
 from .models import FINDING_LABELS
 
 
-def weekly_digest(store: Store, limit: int = 100) -> dict:
-    findings = store.list_findings(status="open")
+def weekly_digest(
+    store: Store, limit: int = 100, entities: Optional[List[str]] = None
+) -> dict:
+    """Build the weekly digest, optionally restricted to selected societies.
+
+    When ``entities`` is given only findings of those invoices are included and
+    the response lists exactly those societies under ``entities``. Without a
+    filter all societies occurring in the invoices are reported so the JSON,
+    HTML, webhook and e-mail views share one consolidated figure.
+    """
+    findings = store.list_findings(status="open", entities=entities)
     findings = findings[:limit]
     total = round(sum(float(f["amount"]) for f in findings), 2)
+    if entities:
+        considered = sorted({str(entity) for entity in entities})
+    else:
+        considered = store.list_entities()
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "period_days": 7,
         "total_amount": total,
         "finding_count": len(findings),
+        "entities": considered,
         "stats": store.stats(),
         "findings": [_decorate(f) for f in findings],
     }
@@ -37,18 +51,25 @@ def render_html(digest: dict) -> str:
     for finding in digest["findings"]:
         rows.append(
             "<tr>"
+            "<td>{entity}</td>"
             "<td>{type}</td>"
             "<td>{message}</td>"
             "<td style='text-align:right'>{amount:.2f} EUR</td>"
             "<td>{reference}</td>"
             "</tr>".format(
+                entity=html.escape(str(finding.get("entity") or "")),
                 type=html.escape(finding["type_label"]),
                 message=html.escape(finding["message"]),
                 amount=float(finding["amount"]),
                 reference=html.escape(str(finding.get("reference_value") or "")),
             )
         )
-    body = "\n".join(rows) or "<tr><td colspan='4'>Keine offenen Auffälligkeiten.</td></tr>"
+    body = (
+        "\n".join(rows)
+        or "<tr><td colspan='5'>Keine offenen Auffälligkeiten.</td></tr>"
+    )
+    entities = digest.get("entities") or []
+    entities_text = html.escape(", ".join(str(entity) for entity in entities)) or "alle"
     stats = digest["stats"]
     precision = stats.get("precision")
     precision_text = "n/a" if precision is None else "%.0f%%" % (precision * 100)
@@ -57,12 +78,13 @@ def render_html(digest: dict) -> str:
 <head><meta charset="utf-8"><title>Rechnungs-Abgleich-Radar — Wochen-Digest</title></head>
 <body style="font-family:sans-serif;max-width:900px;margin:2rem auto">
 <h1>Wochen-Digest — Rechnungs-Abgleich-Radar</h1>
+<p>Gesellschaft(en): <strong>{entities}</strong></p>
 <p>Erstellt: {generated_at}. Potenzielles Abweichungsvolumen:
 <strong>{total:.2f} EUR</strong> aus {count} Auffälligkeiten.</p>
 <p>Rechnungen: {invoices} · Findings: {findings} · Precision (Feedback):
 {precision}</p>
 <table border="1" cellpadding="6" cellspacing="0" width="100%">
-<thead><tr><th>Art</th><th>Begründung</th><th>Betrag</th><th>Referenz</th></tr></thead>
+<thead><tr><th>Gesellschaft</th><th>Art</th><th>Begründung</th><th>Betrag</th><th>Referenz</th></tr></thead>
 <tbody>
 {body}
 </tbody></table>
@@ -70,6 +92,7 @@ def render_html(digest: dict) -> str:
 Rechnungs-Abgleich-Radar. Zahlungsausführung ist nicht Teil dieses Systems.</p>
 </body></html>
 """.format(
+        entities=entities_text,
         generated_at=html.escape(digest["generated_at"]),
         total=float(digest["total_amount"]),
         count=digest["finding_count"],
