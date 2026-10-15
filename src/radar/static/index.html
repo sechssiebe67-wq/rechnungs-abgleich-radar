@@ -72,6 +72,16 @@
     <textarea id="ref" placeholder='{"supplier":"ACME GmbH","article":"Schraube M8","unit_price":0.40,"valid_from":"2026-01-01","source":"contract"}'></textarea>
     <p><button onclick="createRef()">Referenzpreis speichern</button></p>
   </section>
+
+  <section>
+    <h2>Lieferanten-Regeln <span class="muted">(leere Felder = globaler Default)</span></h2>
+    <table>
+      <thead><tr><th>Lieferant</th><th>Toleranz %</th><th>Drift %</th><th>Duplikat-Fenster (Tage)</th><th>Freibetrag</th><th></th></tr></thead>
+      <tbody id="supplier-rules"><tr><td colspan="6" class="muted">Lade …</td></tr></tbody>
+    </table>
+    <textarea id="rule" placeholder='{"supplier":"ACME GmbH","tolerance_pct":1.0,"price_drift_pct":2.0,"duplicate_window_days":45,"min_amount_eur":5.0}'></textarea>
+    <p><button onclick="createRule()">Regel speichern</button></p>
+  </section>
 </main>
 <footer>Rechnungs-Abgleich-Radar · Zahlungsausführung ist bewusst nicht Teil des Systems.</footer>
 <script>
@@ -83,7 +93,14 @@ async function api(path, options) {
   return data;
 }
 function money(v) { return new Intl.NumberFormat('de-DE', {minimumFractionDigits:2, maximumFractionDigits:2}).format(v) + ' EUR'; }
-function esc(s) { const d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML; }
+function esc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
 
 async function loadHealth() {
   try { const d = await api('/healthz'); document.getElementById('health').textContent = 'status: ' + d.status; }
@@ -131,11 +148,32 @@ async function createRef() {
   await api('/api/reference-prices', {method:'POST', headers:{'Content-Type':'application/json'}, body: document.getElementById('ref').value});
   await refresh();
 }
+function fmt(v) { return v == null ? '—' : esc(v); }
+async function loadSupplierRules() {
+  const d = await api('/api/supplier-rules');
+  const rows = d.supplier_rules.map(r => `<tr>
+    <td>${esc(r.supplier)}</td>
+    <td>${fmt(r.tolerance_pct)}</td>
+    <td>${fmt(r.price_drift_pct)}</td>
+    <td>${fmt(r.duplicate_window_days)}</td>
+    <td class="amount">${r.min_amount_eur == null ? '—' : money(r.min_amount_eur)}</td>
+    <td><button class="secondary" data-supplier="${esc(r.supplier)}" onclick="deleteRule(this)">löschen</button></td>
+  </tr>`).join('');
+  document.getElementById('supplier-rules').innerHTML = rows || '<tr><td colspan="6" class="muted">Keine Lieferanten-Regeln hinterlegt.</td></tr>';
+}
+async function createRule() {
+  await api('/api/supplier-rules', {method:'POST', headers:{'Content-Type':'application/json'}, body: document.getElementById('rule').value});
+  await refresh();
+}
+async function deleteRule(button) {
+  await api('/api/supplier-rules/' + encodeURIComponent(button.dataset.supplier), {method:'DELETE'});
+  await refresh();
+}
 async function reconcileAll() {
   await api('/api/reconcile', {method:'POST', headers:{'Content-Type':'application/json'}, body: '{}'});
   await refresh();
 }
-async function refresh() { await Promise.all([loadMetrics(), loadFindings()]); }
+async function refresh() { await Promise.all([loadMetrics(), loadFindings(), loadSupplierRules()]); }
 loadHealth(); refresh();
 </script>
 </body>

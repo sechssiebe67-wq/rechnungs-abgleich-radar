@@ -141,6 +141,113 @@ class FlowTests(ApiTestCase):
         self.assertEqual(status, 404)
 
 
+class SupplierRuleApiTests(ApiTestCase):
+    def _create_po(self):
+        status, _ = self.json_request(
+            "POST",
+            "/api/purchase-orders",
+            {
+                "po_number": "PO-77",
+                "supplier": "ACME GmbH",
+                "items": [{"article": "Schraube M8", "quantity": 100, "unit_price": 0.40}],
+            },
+        )
+        self.assertEqual(status, 201)
+
+    def _create_invoice(self, number, unit_price, invoice_date="2026-01-15"):
+        return self.json_request(
+            "POST",
+            "/api/invoices",
+            {
+                "invoice_number": number,
+                "supplier": "ACME GmbH",
+                "invoice_date": invoice_date,
+                "po_number": "PO-77",
+                "items": [
+                    {"article": "Schraube M8", "quantity": 100, "unit_price": unit_price}
+                ],
+            },
+        )
+
+    def test_rule_override_and_delete_restores_default(self):
+        self._create_po()
+        status, payload = self.json_request(
+            "POST", "/api/supplier-rules", {"supplier": "ACME GmbH", "tolerance_pct": 1.0}
+        )
+        self.assertEqual(status, 201)
+
+        csv = (
+            "invoice_number,supplier,invoice_date,position,article,quantity,unit_price,po_number\n"
+            "RE-100,ACME GmbH,2026-01-15,1,Schraube M8,100,0.406,PO-77\n"
+        )
+        status, payload = self.json_request("POST", "/api/invoices/import", csv)
+        self.assertEqual(status, 201)
+        self.assertEqual(payload["findings"], 1)
+        invoice_id = payload["invoice_ids"][0]
+
+        status, audit = self.json_request("GET", "/api/invoices/%d" % invoice_id)
+        self.assertEqual(
+            audit["applied_rule"]["tolerance_pct"], {"value": 1.0, "source": "supplier"}
+        )
+
+        status, listing = self.json_request("GET", "/api/supplier-rules")
+        self.assertEqual(len(listing["supplier_rules"]), 1)
+        status, rule = self.json_request("GET", "/api/supplier-rules/ACME%20GmbH")
+        self.assertEqual(rule["tolerance_pct"], 1.0)
+
+        status, _ = self.json_request("DELETE", "/api/supplier-rules/ACME%20GmbH")
+        self.assertEqual(status, 200)
+
+        status, payload = self.json_request("POST", "/api/reconcile", {"invoice_id": invoice_id})
+        self.assertEqual(status, 200)
+        self.assertEqual(len(payload["findings"]), 0)
+
+        status, audit = self.json_request("GET", "/api/invoices/%d" % invoice_id)
+        self.assertEqual(audit["applied_rule"]["tolerance_pct"]["source"], "global")
+
+    def test_min_amount_suppresses_small_findings(self):
+        self._create_po()
+        self.json_request(
+            "POST", "/api/supplier-rules", {"supplier": "ACME GmbH", "min_amount_eur": 5.0}
+        )
+        status, payload = self._create_invoice("RE-200", 0.42)
+        self.assertEqual(status, 201)
+        self.assertEqual(payload["findings"], [])
+
+        status, payload = self._create_invoice("RE-201", 0.47, invoice_date="2026-01-16")
+        self.assertEqual(status, 201)
+        self.assertEqual(len(payload["findings"]), 1)
+
+    def test_unknown_rule_returns_404(self):
+        status, _ = self.json_request("GET", "/api/supplier-rules/Unbekannt")
+        self.assertEqual(status, 404)
+        status, _ = self.json_request("DELETE", "/api/supplier-rules/Unbekannt")
+        self.assertEqual(status, 404)
+
+    def test_invalid_rule_values_return_400(self):
+        for payload in (
+            {"supplier": "A", "tolerance_pct": 150},
+            {"supplier": "A", "duplicate_window_days": -1},
+            {"supplier": "A", "min_amount_eur": -3},
+        ):
+            status, body = self.json_request("POST", "/api/supplier-rules", payload)
+            self.assertEqual(status, 400)
+            self.assertIn("error", body)
+
+    def test_missing_supplier_returns_400(self):
+        status, body = self.json_request("POST", "/api/supplier-rules", {"tolerance_pct": 1.0})
+        self.assertEqual(status, 400)
+        self.assertIn("supplier", body["error"])
+
+    def test_example_rules_file_imports(self):
+        path = os.path.join(_HERE, "..", "examples", "supplier_rules.json")
+        with open(path, encoding="utf-8") as handle:
+            rules = handle.read()
+        status, payload = self.json_request("POST", "/api/supplier-rules", rules)
+        self.assertEqual(status, 201)
+        self.assertEqual(payload["count"], 2)
+
+
 class AuthTests(ApiTestCase):
     token = "geheim"
 

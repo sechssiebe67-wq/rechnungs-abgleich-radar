@@ -11,7 +11,7 @@ import os
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Dict, List, Optional, Tuple
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from . import __version__
 from .config import Settings
@@ -24,6 +24,7 @@ from .ingest import (
     purchase_orders_from_csv,
     reference_price_from_dict,
     reference_prices_from_csv,
+    supplier_rule_from_dict,
 )
 from .reconcile import invoice_audit, reconcile_all, reconcile_invoice
 
@@ -49,7 +50,7 @@ class Router:
             matched = True
             for expected, actual in zip(segments, requested):
                 if expected.startswith(":"):
-                    params[expected[1:]] = actual
+                    params[expected[1:]] = unquote(actual)
                 elif expected != actual:
                     matched = False
                     break
@@ -118,6 +119,9 @@ class RadarHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         self._dispatch("POST")
 
+    def do_DELETE(self) -> None:  # noqa: N802
+        self._dispatch("DELETE")
+
     def _dispatch(self, method: str) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
@@ -170,6 +174,36 @@ class RadarHandler(BaseHTTPRequestHandler):
             raise ValueError("name is required")
         self.store.upsert_supplier(name)
         self._send_json({"status": "created", "name": name}, status=201)
+
+    def h_supplier_rules(self, params, query) -> None:
+        self._send_json({"supplier_rules": self.store.list_supplier_rules()})
+
+    def h_get_supplier_rule(self, params, query) -> None:
+        rule = self.store.get_supplier_rule(params["supplier"])
+        if rule is None:
+            self._send_error_json(404, "unknown supplier rule")
+            return
+        self._send_json(rule)
+
+    def h_upsert_supplier_rule(self, params, query) -> None:
+        data = self._json_body()
+        entries = data if isinstance(data, list) else [data]
+        suppliers: List[str] = []
+        for entry in entries:
+            rule = supplier_rule_from_dict(entry)
+            supplier = rule.pop("supplier")
+            self.store.upsert_supplier_rule(supplier, **rule)
+            suppliers.append(supplier)
+        self._send_json(
+            {"status": "created", "suppliers": suppliers, "count": len(suppliers)},
+            status=201,
+        )
+
+    def h_delete_supplier_rule(self, params, query) -> None:
+        if not self.store.delete_supplier_rule(params["supplier"]):
+            self._send_error_json(404, "unknown supplier rule")
+            return
+        self._send_json({"status": "deleted", "supplier": params["supplier"]})
 
     def h_reference_prices(self, params, query) -> None:
         with self.store.connect() as conn:
@@ -257,7 +291,7 @@ class RadarHandler(BaseHTTPRequestHandler):
 
     def h_get_invoice(self, params, query) -> None:
         invoice_id = int(params["id"])
-        audit = invoice_audit(self.store, invoice_id)
+        audit = invoice_audit(self.store, invoice_id, self.settings)
         if audit is None:
             self._send_error_json(404, "unknown invoice")
             return
@@ -309,6 +343,10 @@ def build_router() -> Router:
     router.add("GET", "/api/stats", RadarHandler.h_stats)
     router.add("GET", "/api/suppliers", RadarHandler.h_suppliers)
     router.add("POST", "/api/suppliers", RadarHandler.h_add_supplier)
+    router.add("GET", "/api/supplier-rules", RadarHandler.h_supplier_rules)
+    router.add("POST", "/api/supplier-rules", RadarHandler.h_upsert_supplier_rule)
+    router.add("GET", "/api/supplier-rules/:supplier", RadarHandler.h_get_supplier_rule)
+    router.add("DELETE", "/api/supplier-rules/:supplier", RadarHandler.h_delete_supplier_rule)
     router.add("GET", "/api/reference-prices", RadarHandler.h_reference_prices)
     router.add("POST", "/api/reference-prices", RadarHandler.h_add_reference_price)
     router.add("POST", "/api/reference-prices/import", RadarHandler.h_import_reference_prices)

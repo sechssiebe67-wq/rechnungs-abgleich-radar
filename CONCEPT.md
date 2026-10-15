@@ -44,6 +44,13 @@ persistentem Speicher.
     sowie gleicher Betrag/Lieferant innerhalb eines Zeitfensters.
   - **Preisdrift:** schleichende Erhöhung über den zuletzt akzeptierten Preis
     ohne vertragliche Deckung.
+- **Lieferanten-Regelprofile** (`supplier_rules`, JSON-API
+  `/api/supplier-rules`): pro Lieferant eigene Toleranz für Preis- und
+  Mengenabweichungen, eigene Drift-Schwelle, eigenes Duplikat-Zeitfenster und
+  ein **Freibetrag** (`min_amount_eur`), unter dem Findings verworfen werden.
+  Nicht gesetzte Felder fallen auf den globalen Default aus `Settings` zurück;
+  die angewendeten Werte und ihre Herkunft (`supplier`/`global`) weist die
+  Audit-Ansicht pro Rechnung als `applied_rule` aus.
 - **Priorisierung** nach Abweichungsbetrag in Euro (absteigend).
 - **Nachvollziehbarkeit:** Audit-Ansicht pro Rechnung — was verglichen wurde und
   was abwich (Referenzwert, Ist-Wert, Betrag, Begründung).
@@ -65,7 +72,9 @@ priorisiert die Freigabe-Entscheidung.
 1. OCR-/PDF-Extraktion statt strukturierter Exporte (Anbindung an Buchhaltung).
 2. Lieferanten- und artikelübergreifendes Fuzzy-Matching uneinheitlicher
    Bezeichnungen mit Lernschleife aus dem Feedback.
-3. Regel-Editor pro Lieferant (Toleranzen, Drift-Schwellen, Freibeträge).
+3. ~~Regel-Editor pro Lieferant (Toleranzen, Drift-Schwellen, Freibeträge).~~
+   **Umgesetzt:** Lieferanten-Regelprofile inkl. Freibetrag über
+   `/api/supplier-rules` pflegbar.
 4. Versand des Digests per SMTP/Webhook und Rollup über mehrere Gesellschaften.
 5. Auswertung vermiedener Beträge (ROI-Nachweis) für den Preistest.
 
@@ -73,7 +82,10 @@ priorisiert die Freigabe-Entscheidung.
 
 Concierge-Test mit 3–5 Kreditorenbuchhaltungen, Precision/Recall der markierten
 Abweichungen gegen manuelle Nachprüfung, Abbruch bei weniger als 5 bestätigten
-Abweichungen pro 200 Rechnungen oder Precision unter 50 %. Die Feedback- und
+Abweichungen pro 200 Rechnungen oder Precision unter 50 %. Zusätzlich lässt sich
+die Precision **pro Lieferant** auswerten, wenn die Feedback-Daten mit den
+Lieferanten-Regelprofilen verschritten werden — so zeigt sich, ob ein Profil die
+Fehlalarme eines Lieferanten tatsächlich reduziert. Die Feedback- und
 Digest-Funktionen dieses Inkrements liefern dafür die Messgrößen.
 
 ## Delivery contract

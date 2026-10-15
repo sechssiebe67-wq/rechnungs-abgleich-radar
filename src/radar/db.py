@@ -30,6 +30,15 @@ CREATE TABLE IF NOT EXISTS suppliers (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS supplier_rules (
+    supplier TEXT PRIMARY KEY REFERENCES suppliers(name) ON DELETE CASCADE,
+    tolerance_pct REAL,
+    price_drift_pct REAL,
+    duplicate_window_days INTEGER,
+    min_amount_eur REAL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS reference_prices (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     supplier TEXT NOT NULL,
@@ -102,6 +111,14 @@ CREATE INDEX IF NOT EXISTS idx_findings_amount ON findings (amount);
 """
 
 
+SUPPLIER_RULE_FIELDS = (
+    "tolerance_pct",
+    "price_drift_pct",
+    "duplicate_window_days",
+    "min_amount_eur",
+)
+
+
 class Store:
     def __init__(self, db_path: str = "radar.db") -> None:
         self.db_path = db_path
@@ -133,6 +150,52 @@ class Store:
         with self.connect() as conn:
             rows = conn.execute("SELECT name FROM suppliers ORDER BY name").fetchall()
         return [row["name"] for row in rows]
+
+    # -- supplier rules ---------------------------------------------------
+    #
+    # A ``NULL`` field means "fall back to the global default from Settings".
+
+    def upsert_supplier_rule(self, supplier: str, **fields: Optional[float]) -> None:
+        supplier = supplier.strip()
+        if not supplier:
+            raise ValueError("supplier is required")
+        self.upsert_supplier(supplier)
+        values = [fields.get(name) for name in SUPPLIER_RULE_FIELDS]
+        with self.connect() as conn:
+            conn.execute(
+                """INSERT INTO supplier_rules
+                   (supplier, tolerance_pct, price_drift_pct,
+                    duplicate_window_days, min_amount_eur, updated_at)
+                   VALUES (?, ?, ?, ?, ?, datetime('now'))
+                   ON CONFLICT(supplier) DO UPDATE SET
+                       tolerance_pct = excluded.tolerance_pct,
+                       price_drift_pct = excluded.price_drift_pct,
+                       duplicate_window_days = excluded.duplicate_window_days,
+                       min_amount_eur = excluded.min_amount_eur,
+                       updated_at = datetime('now')""",
+                (supplier, *values),
+            )
+
+    def get_supplier_rule(self, supplier: str) -> Optional[dict]:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM supplier_rules WHERE supplier = ?", (supplier.strip(),)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_supplier_rules(self) -> List[dict]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM supplier_rules ORDER BY supplier"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def delete_supplier_rule(self, supplier: str) -> bool:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "DELETE FROM supplier_rules WHERE supplier = ?", (supplier.strip(),)
+            )
+            return cursor.rowcount > 0
 
     def add_reference_price(self, price: ReferencePrice) -> None:
         self.upsert_supplier(price.supplier)

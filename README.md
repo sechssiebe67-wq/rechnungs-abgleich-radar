@@ -51,6 +51,10 @@ python3 -m unittest discover -s tests -v
 | `GET /` | Web-Oberfläche |
 | `GET /api/stats` | Kennzahlen inkl. Precision aus Feedback |
 | `POST /api/suppliers` | Lieferant anlegen |
+| `GET /api/supplier-rules` | Liste aller Lieferanten-Regeln |
+| `GET /api/supplier-rules/:supplier` | Einzelne Regel oder `404` |
+| `POST /api/supplier-rules` | Regel anlegen/aktualisieren (Objekt oder Liste) |
+| `DELETE /api/supplier-rules/:supplier` | Regel löschen, `404` bei unbekanntem Lieferanten |
 | `POST /api/reference-prices` | Vertrags-/akzeptierten Preis anlegen (JSON, Liste oder `prices`) |
 | `POST /api/purchase-orders` | Bestellung mit Positionen anlegen |
 | `POST /api/invoices` | Rechnung per JSON anlegen und sofort abgleichen |
@@ -69,6 +73,40 @@ RE-1001,ACME GmbH,2026-01-15,1,Schraube M8,100,0.42,PO-77
 ```
 
 Beispieldaten liegen unter [`examples/`](examples/).
+
+### Lieferanten-Regeln
+
+Pro Lieferant lassen sich eigene Prüfschwellen hinterlegen, um legitime,
+wiederkehrende Schwankungen auszublenden, ohne die globale Empfindlichkeit zu
+senken. Leere/`null`-Felder fallen auf den globalen Default aus `Settings`
+(siehe Umgebungsvariablen) zurück.
+
+| Feld | Bedeutung | Validierung |
+| --- | --- | --- |
+| `supplier` | Lieferantenname (Primärschlüssel, Pflicht) | nicht leer |
+| `tolerance_pct` | Toleranz für Preis-/Mengenabweichung in Prozent | `0`–`100` |
+| `price_drift_pct` | Schwelle für Preisdrift in Prozent | `0`–`100` |
+| `duplicate_window_days` | Zeitfenster für Duplikatverdacht in Tagen | `>= 0` |
+| `min_amount_eur` | Freibetrag: Findings unterhalb dieses Betrags werden verworfen | `>= 0` |
+
+```sh
+# Einzelne Regel anlegen (ACME bekommt 1 % Toleranz statt global 2 %)
+curl -sS -X POST http://localhost:8080/api/supplier-rules \
+  -H 'Content-Type: application/json' \
+  -d '{"supplier":"ACME GmbH","tolerance_pct":1.0}'
+
+# Mehrere Regeln aus der Beispieldatei importieren
+curl -sS -X POST http://localhost:8080/api/supplier-rules \
+  -H 'Content-Type: application/json' \
+  --data-binary @examples/supplier_rules.json
+
+# Alle Regeln auflisten bzw. eine löschen
+curl -sS http://localhost:8080/api/supplier-rules
+curl -sS -X DELETE http://localhost:8080/api/supplier-rules/ACME%20GmbH
+```
+
+Die effektiv verwendeten Schwellen inklusive Herkunft (`supplier` vs. `global`)
+stehen in der Audit-Ansicht `GET /api/invoices/:id` im Feld `applied_rule`.
 
 ## Deployment
 
