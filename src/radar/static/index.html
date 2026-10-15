@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rechnungs-Abgleich-Radar</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; background:#0f1419; color:#e6edf3; }
+  header { padding: 1.2rem 2rem; background:#161b22; border-bottom:1px solid #30363d; display:flex; align-items:center; gap:1rem; flex-wrap:wrap; }
+  header h1 { font-size:1.25rem; margin:0; }
+  .badge { font-size:.75rem; padding:.15rem .5rem; border-radius:1rem; background:#238636; }
+  main { max-width: 1100px; margin: 1.5rem auto; padding: 0 1rem; display:grid; gap:1.5rem; }
+  section { background:#161b22; border:1px solid #30363d; border-radius:8px; padding:1rem 1.25rem; }
+  h2 { margin-top:0; font-size:1rem; letter-spacing:.02em; }
+  table { width:100%; border-collapse: collapse; font-size:.9rem; }
+  th, td { text-align:left; padding:.5rem; border-bottom:1px solid #30363d; vertical-align:top; }
+  th { color:#8b949e; font-weight:600; }
+  .amount { text-align:right; white-space:nowrap; font-variant-numeric: tabular-nums; }
+  button { background:#238636; color:#fff; border:none; border-radius:6px; padding:.35rem .7rem; cursor:pointer; font-size:.8rem; }
+  button.secondary { background:#30363d; }
+  textarea { width:100%; min-height:110px; background:#0d1117; color:#e6edf3; border:1px solid #30363d; border-radius:6px; padding:.6rem; font-family: ui-monospace, Menlo, monospace; font-size:.8rem; box-sizing:border-box; }
+  .metrics { display:flex; gap:1.5rem; flex-wrap:wrap; }
+  .metric { min-width:120px; }
+  .metric .value { font-size:1.5rem; font-weight:700; }
+  .metric .label { color:#8b949e; font-size:.8rem; }
+  .muted { color:#8b949e; font-size:.8rem; }
+  .row-actions { display:flex; gap:.4rem; }
+  footer { text-align:center; color:#8b949e; font-size:.8rem; padding:2rem; }
+  a { color:#58a6ff; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Rechnungs-Abgleich-Radar</h1>
+  <span class="badge" id="health">status: …</span>
+  <span class="muted">Prüft jede Eingangsrechnung gegen Bestellung, Vertrag und letzten akzeptierten Preis.</span>
+</header>
+<main>
+  <section>
+    <h2>Kennzahlen</h2>
+    <div class="metrics" id="metrics"></div>
+  </section>
+
+  <section>
+    <h2>Offene Auffälligkeiten <span class="muted">(priorisiert nach Abweichungsbetrag)</span></h2>
+    <p><a href="/api/digest/weekly.html" target="_blank" rel="noreferrer">Wochen-Digest öffnen</a> ·
+       <a href="/api/digest/weekly" target="_blank" rel="noreferrer">als JSON</a></p>
+    <table>
+      <thead><tr><th>Art</th><th>Begründung</th><th class="amount">Betrag</th><th>Feedback</th></tr></thead>
+      <tbody id="findings"><tr><td colspan="4" class="muted">Lade …</td></tr></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Rechnungen hochladen (CSV)</h2>
+    <p class="muted">Spalten: invoice_number,supplier,invoice_date,position,article,quantity,unit_price,po_number</p>
+    <textarea id="csv" placeholder="RE-1001,ACME GmbH,2026-01-15,1,Schraube M8,100,0.42,PO-77"></textarea>
+    <p><button onclick="uploadCsv()">CSV importieren</button>
+       <button class="secondary" onclick="reconcileAll()">Alles neu abgleichen</button></p>
+    <p class="muted" id="upload-status"></p>
+  </section>
+
+  <section>
+    <h2>Bestellung anlegen (JSON)</h2>
+    <textarea id="po" placeholder='{"po_number":"PO-77","supplier":"ACME GmbH","items":[{"article":"Schraube M8","quantity":100,"unit_price":0.40}]}'></textarea>
+    <p><button onclick="createPo()">Bestellung speichern</button></p>
+  </section>
+
+  <section>
+    <h2>Referenzpreis anlegen (JSON)</h2>
+    <textarea id="ref" placeholder='{"supplier":"ACME GmbH","article":"Schraube M8","unit_price":0.40,"valid_from":"2026-01-01","source":"contract"}'></textarea>
+    <p><button onclick="createRef()">Referenzpreis speichern</button></p>
+  </section>
+</main>
+<footer>Rechnungs-Abgleich-Radar · Zahlungsausführung ist bewusst nicht Teil des Systems.</footer>
+<script>
+async function api(path, options) {
+  const res = await fetch(path, options);
+  const text = await res.text();
+  let data; try { data = JSON.parse(text); } catch (e) { data = text; }
+  if (!res.ok) throw new Error((data && data.error) || res.statusText);
+  return data;
+}
+function money(v) { return new Intl.NumberFormat('de-DE', {minimumFractionDigits:2, maximumFractionDigits:2}).format(v) + ' EUR'; }
+function esc(s) { const d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML; }
+
+async function loadHealth() {
+  try { const d = await api('/healthz'); document.getElementById('health').textContent = 'status: ' + d.status; }
+  catch (e) { document.getElementById('health').textContent = 'status: error'; }
+}
+async function loadMetrics() {
+  const d = await api('/api/stats');
+  const precision = d.precision == null ? 'n/a' : Math.round(d.precision * 100) + '%';
+  document.getElementById('metrics').innerHTML = [
+    ['Rechnungen', d.invoices], ['Findings', d.findings],
+    ['Offenes Volumen', money(d.open_amount)], ['Precision', precision],
+    ['Bestätigt', d.confirmed], ['Fehlalarm', d.false_alarm],
+  ].map(([label, value]) => `<div class="metric"><div class="value">${esc(value)}</div><div class="label">${esc(label)}</div></div>`).join('');
+}
+async function loadFindings() {
+  const d = await api('/api/findings?status=open');
+  const rows = d.findings.map(f => `<tr>
+    <td>${esc(f.finding_type)}</td>
+    <td>${esc(f.message)}<div class="muted">Ref: ${esc(f.reference_value || '')} · Ist: ${esc(f.actual_value || '')}</div></td>
+    <td class="amount">${money(f.amount)}</td>
+    <td><div class="row-actions">
+      <button onclick="feedback(${f.id},'confirmed')">bestätigt</button>
+      <button class="secondary" onclick="feedback(${f.id},'false_alarm')">Fehlalarm</button>
+    </div></td></tr>`).join('');
+  document.getElementById('findings').innerHTML = rows || '<tr><td colspan="4" class="muted">Keine offenen Auffälligkeiten.</td></tr>';
+}
+async function feedback(id, verdict) {
+  await api('/api/findings/' + id + '/feedback', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({verdict})});
+  await refresh();
+}
+async function uploadCsv() {
+  const body = document.getElementById('csv').value;
+  document.getElementById('upload-status').textContent = 'Importiere …';
+  try {
+    const d = await api('/api/invoices/import', {method:'POST', headers:{'Content-Type':'text/csv'}, body});
+    document.getElementById('upload-status').textContent = `${d.invoices} Rechnung(en), ${d.findings} Finding(s) erzeugt.`;
+  } catch (e) { document.getElementById('upload-status').textContent = 'Fehler: ' + e.message; }
+  await refresh();
+}
+async function createPo() {
+  await api('/api/purchase-orders', {method:'POST', headers:{'Content-Type':'application/json'}, body: document.getElementById('po').value});
+  await refresh();
+}
+async function createRef() {
+  await api('/api/reference-prices', {method:'POST', headers:{'Content-Type':'application/json'}, body: document.getElementById('ref').value});
+  await refresh();
+}
+async function reconcileAll() {
+  await api('/api/reconcile', {method:'POST', headers:{'Content-Type':'application/json'}, body: '{}'});
+  await refresh();
+}
+async function refresh() { await Promise.all([loadMetrics(), loadFindings()]); }
+loadHealth(); refresh();
+</script>
+</body>
+</html>

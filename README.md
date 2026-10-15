@@ -1,47 +1,94 @@
-# AI Pipes — empty starting point
+# Rechnungs-Abgleich-Radar
 
-This branch contains the autonomous development pipeline and an empty
-`CONCEPT.md`, with no product or product tests. Use it to improve the empty
-starting point or create new, independent projects.
+Prüft jede Eingangsrechnung Position für Position gegen Bestellungen,
+Vertragspreise und den zuletzt akzeptierten Preis. Vor der Zahlungsfreigabe
+liefert das Radar eine nach **Abweichungsbetrag in Euro priorisierte Liste nur
+der auffälligen Rechnungen** — mit Fundstelle, Betrag und Begründung.
 
-The first generated issue proposes a project from scratch. Its implementation
-fills `CONCEPT.md` and creates product files and tests. The pipeline documentation lives
-in [`.github/README.md`](.github/README.md), including the required GitHub secrets
-and repository settings.
+Das Produkt ist ein eigenständiger, dependency-freier Python-Dienst
+(Standardbibliothek + SQLite). Details zu Ziel, Nutzern und Roadmap stehen in
+[`CONCEPT.md`](CONCEPT.md).
 
-## Start again in this repository
+## Erkannte Auffälligkeiten
 
-Merge this starting point into `main` when you are ready to start a new project.
-The push to `main` generates the first issue and starts the development cycle.
-Working on `empty-repo` does not start issue generation; the generator always
-uses `main`, even when started manually.
+| Typ | Beschreibung |
+| --- | --- |
+| `price_deviation` | Rechnungspreis über Bestell- oder Vertragspreis (Toleranz konfigurierbar) |
+| `quantity_deviation` | Höhere berechnete Menge als bestellt |
+| `missing_po` | Keine zuordenbare Bestellung zur Rechnung |
+| `price_drift` | Schleichende Erhöhung über den zuletzt akzeptierten Preis ohne Vertrag |
+| `duplicate` | Leicht abweichende Rechnungsnummer oder gleicher Betrag/Lieferant im Zeitfenster |
 
-Existing issues, pull requests, branches, and history remain available. Avoid a
-commit message beginning with `chore(reset):`: that explicitly triggers cleanup
-of previous remote work when pushed to `main`.
-
-## Create an independent project
-
-Export this branch without its Git history:
+## Lokal starten
 
 ```sh
-mkdir ../my-new-project
-git archive empty-repo | tar -x -C ../my-new-project
-cd ../my-new-project
-git init -b main
-git add .
-git commit -m "chore: initialize empty development pipeline"
+PYTHONPATH=src RADAR_DB_PATH=/tmp/radar.db python3 -m radar
+# -> http://localhost:8080
 ```
 
-Create a GitHub repository, configure the secrets and settings documented in
-`.github/README.md`, then add its remote and push `main`. Each new repository
-has its own project and development cycle.
+Umgebungsvariablen:
 
-## Verify the pipeline locally
+| Variable | Default | Bedeutung |
+| --- | --- | --- |
+| `RADAR_DB_PATH` | `radar.db` | Pfad zur SQLite-Datei |
+| `RADAR_HOST` / `RADAR_PORT` | `0.0.0.0` / `8080` | HTTP-Bindung |
+| `RADAR_TOLERANCE_PCT` | `2` | Toleranz für Preis-/Mengenabweichung in Prozent |
+| `RADAR_PRICE_DRIFT_PCT` | `2` | Schwelle für Preisdrift über akzeptierte Preise |
+| `RADAR_DUPLICATE_WINDOW_DAYS` | `45` | Zeitfenster für Duplikatverdacht |
+| `RADAR_API_TOKEN` | leer | Wenn gesetzt, ist die API per `Authorization: Bearer …` geschützt (`/healthz` bleibt offen) |
+
+## Tests
 
 ```sh
-python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v
+python3 -m unittest discover -s tests -v
 ```
 
-CI runs these pipeline tests on every push and pull request, and also runs
-product tests from `tests/` once that directory exists.
+## HTTP-API (Auszug)
+
+| Methode & Pfad | Zweck |
+| --- | --- |
+| `GET /healthz` | Health-Probe |
+| `GET /` | Web-Oberfläche |
+| `GET /api/stats` | Kennzahlen inkl. Precision aus Feedback |
+| `POST /api/suppliers` | Lieferant anlegen |
+| `POST /api/reference-prices` | Vertrags-/akzeptierten Preis anlegen (JSON, Liste oder `prices`) |
+| `POST /api/purchase-orders` | Bestellung mit Positionen anlegen |
+| `POST /api/invoices` | Rechnung per JSON anlegen und sofort abgleichen |
+| `POST /api/invoices/import` | Rechnungen per CSV (ein Datensatz pro Position) importieren |
+| `GET /api/invoices/:id` | Nachvollziehbarkeit: was wurde verglichen, was wich ab |
+| `POST /api/reconcile` | Alle Rechnungen (oder `{"invoice_id": …}`) neu abgleichen |
+| `GET /api/findings?status=open&min_amount=` | Priorisierte Auffälligkeiten |
+| `POST /api/findings/:id/feedback` | `{"verdict": "confirmed"|"false_alarm"}` |
+| `GET /api/digest/weekly[.html]` | Wöchentlicher Digest als JSON/HTML |
+
+### CSV-Format für Rechnungsimport
+
+```csv
+invoice_number,supplier,invoice_date,position,article,quantity,unit_price,po_number
+RE-1001,ACME GmbH,2026-01-15,1,Schraube M8,100,0.42,PO-77
+```
+
+Beispieldaten liegen unter [`examples/`](examples/).
+
+## Deployment
+
+- **Container:** `Dockerfile`, HTTP auf Port 8080, `GET /healthz`,
+  Multi-Arch (linux/amd64, linux/arm64), Ausführung als UID 10001, Daten unter
+  `/data`.
+- **Helm:** genau ein Chart unter
+  [`deploy/helm/rechnungs-abgleich-radar/`](deploy/helm/rechnungs-abgleich-radar/).
+  Das Image wird über `image.repository` und `image.digest` als
+  `repository@digest` gerendert; Ingress über `ingress.enabled`, `ingress.host`,
+  `ingress.className`.
+
+```sh
+helm template radar deploy/helm/rechnungs-abgleich-radar \
+  --set image.digest=sha256:<digest> \
+  --set ingress.enabled=true --set ingress.host=radar.example.com --set ingress.className=nginx
+```
+
+## Entwicklungspipeline
+
+Die autonome Pipeline (Issue → Implementierung → Review → Merge) ist in
+[`.github/README.md`](.github/README.md) dokumentiert. Die Pipeline ist
+Infrastruktur, nicht das Produkt; das Produkt bleibt eigenständig lauffähig.
