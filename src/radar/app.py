@@ -16,7 +16,15 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from . import __version__
 from .config import Settings
-from .db import DEFAULT_FINDING_ORDER, FINDING_ORDER_BY, Store
+from .db import (
+    DEFAULT_FINDING_ORDER,
+    DEFAULT_INVOICE_ORDER,
+    DEFAULT_SUPPLIER_RULE_ORDER,
+    FINDING_ORDER_BY,
+    INVOICE_ORDER_BY,
+    SUPPLIER_RULE_ORDER_BY,
+    Store,
+)
 from .digest import render_html, weekly_digest
 from .notify import deliver_digest
 from .ingest import (
@@ -89,20 +97,27 @@ def _non_negative_query_int(
     return value
 
 
-def _finding_sort(query: Dict[str, List[str]]) -> Optional[str]:
-    """Read the optional, whitelisted ``sort`` parameter for findings.
+def _whitelisted_sort(
+    query: Dict[str, List[str]], name: str, allowed: Dict[str, str]
+) -> Optional[str]:
+    """Read an optional, whitelisted ``sort``-style parameter.
 
     Returns ``None`` when absent/empty (the store then applies its documented
     default ordering). Raises :class:`ValueError` (mapped to ``400`` by the
-    dispatcher) for any value outside :data:`FINDING_ORDER_BY`.
+    dispatcher) for any value outside ``allowed``.
     """
-    raw = query.get("sort", [None])[0]
+    raw = query.get(name, [None])[0]
     if raw is None or raw == "":
         return None
-    if raw not in FINDING_ORDER_BY:
-        allowed = ", ".join(sorted(FINDING_ORDER_BY))
-        raise ValueError("sort must be one of: %s" % allowed)
+    if raw not in allowed:
+        options = ", ".join(sorted(allowed))
+        raise ValueError("%s must be one of: %s" % (name, options))
     return raw
+
+
+def _finding_sort(query: Dict[str, List[str]]) -> Optional[str]:
+    """Read the optional, whitelisted ``sort`` parameter for findings."""
+    return _whitelisted_sort(query, "sort", FINDING_ORDER_BY)
 
 
 class Router:
@@ -276,7 +291,23 @@ class RadarHandler(BaseHTTPRequestHandler):
         self._send_json({"status": "created", "name": name}, status=201)
 
     def h_supplier_rules(self, params, query) -> None:
-        self._send_json({"supplier_rules": self.store.list_supplier_rules()})
+        limit = _non_negative_query_int(query, "limit")
+        offset = _non_negative_query_int(query, "offset")
+        sort = _whitelisted_sort(query, "sort", SUPPLIER_RULE_ORDER_BY)
+        rules = self.store.list_supplier_rules(
+            limit=limit, offset=offset, order_by=sort
+        )
+        total_count = self.store.count_supplier_rules()
+        self._send_json(
+            {
+                "supplier_rules": rules,
+                "count": len(rules),
+                "total_count": total_count,
+                "limit": limit,
+                "offset": offset,
+                "sort": sort or DEFAULT_SUPPLIER_RULE_ORDER,
+            }
+        )
 
     def h_get_supplier_rule(self, params, query) -> None:
         rule = self.store.get_supplier_rule(params["supplier"])
@@ -362,7 +393,21 @@ class RadarHandler(BaseHTTPRequestHandler):
         )
 
     def h_invoices(self, params, query) -> None:
-        self._send_json({"invoices": self.store.list_invoices()})
+        limit = _non_negative_query_int(query, "limit")
+        offset = _non_negative_query_int(query, "offset")
+        sort = _whitelisted_sort(query, "sort", INVOICE_ORDER_BY)
+        invoices = self.store.list_invoices(limit=limit, offset=offset, order_by=sort)
+        total_count = self.store.count_invoices()
+        self._send_json(
+            {
+                "invoices": invoices,
+                "count": len(invoices),
+                "total_count": total_count,
+                "limit": limit,
+                "offset": offset,
+                "sort": sort or DEFAULT_INVOICE_ORDER,
+            }
+        )
 
     def h_add_invoice(self, params, query) -> None:
         data = self._json_body()
