@@ -47,6 +47,20 @@ auth:
   tokenKey: api-token
   token: ""
 
+digest:
+  webhookUrl: ""
+  schedule: ""
+  smtp:
+    host: ""
+    port: 587
+    user: ""
+    from: ""
+    to: ""
+    useTls: true
+    existingSecret: ""
+    passwordKey: smtp-password
+    password: ""
+
 podSecurityContext:
   runAsNonRoot: true
   runAsUser: 10001

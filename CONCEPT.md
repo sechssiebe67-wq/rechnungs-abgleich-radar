@@ -64,6 +64,21 @@ persistentem Speicher.
   macht so sichtbar, ob ein Lieferanten-Regelprofil die Fehlalarme dieses
   Lieferanten reduziert.
 - **Wöchentlicher Digest** als E-Mail-fähiger HTML-Report und als JSON.
+- **Digest-Versand per Webhook und SMTP** (`radar/notify.py`)
+  - Aktive Zustellung des Wochen-Digests statt manuellem Abruf.
+  - **Webhook** (Slack-/Mattermost-kompatibles JSON mit Gesamtbetrag, Anzahl
+    Findings und Top-5-Auffälligkeiten) über `RADAR_DIGEST_WEBHOOK_URL`.
+  - **E-Mail** des HTML-Digests über SMTP
+    (`RADAR_DIGEST_SMTP_HOST/PORT/USER/PASSWORD/FROM/TO`,
+    `RADAR_DIGEST_SMTP_USE_TLS`).
+  - Auslösbar über `POST /api/digest/weekly/send`; liefert je Kanal
+    `{channel, status: sent|skipped|error, detail}`. Fehler eines Kanals
+    blockieren den anderen nicht.
+  - Optionaler **In-Process-Scheduler** über `RADAR_DIGEST_SCHEDULE`
+    (`weekly`/`daily`, leer = aus); startet einen Daemon-Thread, der sauber mit
+    dem Server herunterfährt.
+  - Nur Standardbibliothek (`urllib.request`, `smtplib`), keine neuen
+    Laufzeit-Abhängigkeiten.
 - **Betrieb:** `GET /healthz`, Dockerfile (linux/amd64 + linux/arm64), Helm-Chart
   unter `deploy/helm/rechnungs-abgleich-radar/`, nicht-root Ausführung,
   optionale persistente SQLite-Ablage.
@@ -82,7 +97,10 @@ priorisiert die Freigabe-Entscheidung.
 3. ~~Regel-Editor pro Lieferant (Toleranzen, Drift-Schwellen, Freibeträge).~~
    **Umgesetzt:** Lieferanten-Regelprofile inkl. Freibetrag über
    `/api/supplier-rules` pflegbar.
-4. Versand des Digests per SMTP/Webhook und Rollup über mehrere Gesellschaften.
+4. ~~Versand des Digests per SMTP/Webhook~~ **Umgesetzt:** aktive Zustellung
+   über `POST /api/digest/weekly/send` bzw. den optionalen Scheduler, inkl.
+   Webhook- und SMTP-Kanälen und Helm-Konfiguration (`digest.*`). Verbleibende
+   Richtung: **Rollup über mehrere Gesellschaften** in einem gemeinsamen Digest.
 5. Auswertung vermiedener Beträge (ROI-Nachweis) für den Preistest. Als
    Zwischenschritt ist die **lieferantenbezogene Precision** über
    `GET /api/stats/by-supplier` bereits verfügbar und zeigt, ob ein
@@ -98,6 +116,12 @@ die Precision **pro Lieferant** auswerten, wenn die Feedback-Daten mit den
 Lieferanten-Regelprofilen verschritten werden — so zeigt sich, ob ein Profil die
 Fehlalarme eines Lieferanten tatsächlich reduziert. Die Feedback- und
 Digest-Funktionen dieses Inkrements liefern dafür die Messgrößen.
+
+Der **Digest-Versand** unterstützt den Concierge-Test direkt: Der Wochen-Digest
+wird den Testkunden per Webhook/SMTP aktiv zugestellt (statt manuellem Abruf),
+sodass die Kreditorenbuchhaltungen wöchentlich ohne Zusatzaufwand beliefert
+werden. So misst der Test die tatsächliche Nutzung und die Precision
+weiterhin über das Feedback in der Oberfläche.
 
 ## Delivery contract
 
