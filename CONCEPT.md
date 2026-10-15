@@ -70,6 +70,21 @@ persistentem Speicher.
   die angewendeten Werte und ihre Herkunft (`supplier`/`global`) weist die
   Audit-Ansicht pro Rechnung als `applied_rule` aus.
 - **Priorisierung** nach Abweichungsbetrag in Euro (absteigend).
+- **Seitenweise Findings-Liste** (`GET /api/findings`): Der Endpoint bleibt ohne
+  neue Parameter vollständig rückwärtskompatibel (weiterhin nach Betrag
+  absteigend) und lässt sich bei großen Beständen über optionale Parameter
+  begrenzen und umsortieren:
+  - `?limit=` (nicht-negative Ganzzahl) und `?offset=` (nicht-negative
+    Ganzzahl) schneiden ein Fenster aus der gefilterten, sortierten Menge;
+    ohne Angabe werden alle Treffer geliefert.
+  - `?sort=` wählt aus `amount_desc` (Default), `amount_asc`,
+    `created_at_desc` und `created_at_asc`; Werte außerhalb dieser Whitelist
+    werden abgewiesen.
+  - Die Antwort enthält zusätzlich `limit`, `offset`, `sort`, `count` (Anzahl
+    der gelieferten Findings) und `total_count` (alle Treffer vor der
+    Pagination); `total_amount` ist die Summe über die gelieferte Seite.
+  - Ungültige Werte (unbekanntes `sort`, negatives `limit`, nicht-ganzzahliges
+    `offset`) liefern `400` mit JSON-Fehlerkörper.
 - **Nachvollziehbarkeit:** Audit-Ansicht pro Rechnung — was verglichen wurde und
   was abwich (Referenzwert, Ist-Wert, Betrag, Begründung).
 - **Manuelles Feedback** pro Treffer (bestätigt / Fehlalarm) inkl. Precision-
@@ -195,6 +210,14 @@ priorisiert die Freigabe-Entscheidung.
    Gesellschaften** über den Block `entities` und `?entity=` (mehrfach). Die
    verbleibende Produktrichtung sind OCR-/PDF-Extraktion und das
    Fuzzy-Matching uneinheitlicher Bezeichnungen (Punkte 1 und 2).
+6. **Begrenzte, seitenweise Ergebnislisten — umgesetzt.** `GET /api/findings`
+   akzeptiert `?limit=`/`?offset=` sowie `?sort=` (Whitelist `amount_desc`,
+   `amount_asc`, `created_at_desc`, `created_at_asc`) und liefert `limit`,
+   `offset`, `sort`, `count` und `total_count`. Damit bleibt der Endpoint auch
+   bei tausenden Findings nutzbar, ohne bestehende Aufrufer zu brechen.
+   Nächster Ausbauschritt: Pagination/Sortierung auf die übrigen
+   Listen-Endpoints (z. B. Rechnungen und Lieferanten-Regeln) übertragen und
+   die Web-Oberfläche mit Seitenumschaltung und Sortierung ausstatten.
 
 ## Validation plan (Bezug zur Produkthypothese)
 

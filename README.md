@@ -77,7 +77,7 @@ python3 -m unittest discover -s tests -v
 | `POST /api/invoices/import` | Rechnungen per CSV (ein Datensatz pro Position) importieren |
 | `GET /api/invoices/:id` | Nachvollziehbarkeit: was wurde verglichen, was wich ab |
 | `POST /api/reconcile` | Alle Rechnungen (oder `{"invoice_id": …}`) neu abgleichen |
-| `GET /api/findings?status=open&min_amount=&entity=` | Priorisierte Auffälligkeiten |
+| `GET /api/findings?status=open&min_amount=&entity=` | Priorisierte Auffälligkeiten; optional seitenweise (`?limit=`, `?offset=`) und sortiert (`?sort=`) |
 | `POST /api/findings/:id/feedback` | `{"verdict": "confirmed"|"false_alarm"}` |
 | `GET /api/digest/weekly[.html]?entity=` | Wöchentlicher Digest als JSON/HTML, optional auf Gesellschaften gefiltert |
 | `POST /api/digest/weekly/send` | Digest aktiv per Webhook/SMTP zustellen (`{"entities": ["DE01"]}`), liefert je Kanal `sent`/`skipped`/`error` |
@@ -103,6 +103,29 @@ Gesellschaften sortiert.
 curl -sS http://localhost:8080/api/entities
 curl -sS 'http://localhost:8080/api/stats/roi?entity=DE01&entity=DE02'
 curl -sS 'http://localhost:8080/api/findings?status=open&entity=DE01'
+```
+
+### Pagination und Sortierung der Findings
+
+`GET /api/findings` bleibt ohne neue Parameter unverändert (alle Treffer, nach
+Abweichungsbetrag absteigend). Bei großen Beständen lässt sich die Liste
+begrenzen und umsortieren:
+
+| Parameter | Bedeutung | Validierung |
+| --- | --- | --- |
+| `limit` | maximale Anzahl Findings ab dem Offset | nicht-negative Ganzzahl |
+| `offset` | Anzahl der zu überspringenden Findings | nicht-negative Ganzzahl |
+| `sort` | Sortierung: `amount_desc` (Default), `amount_asc`, `created_at_desc`, `created_at_asc` | Whitelist |
+
+Die Antwort enthält zusätzlich `limit` (effektiv), `offset` (effektiv), `sort`
+(effektiv), `count` (gelieferte Findings) und `total_count` (alle Treffer vor
+der Pagination). `total_amount` ist die Summe über die gelieferte Seite.
+Ungültige Werte — unbekanntes `sort`, negatives `limit` oder nicht-ganzzahliges
+`offset` — liefern `400` mit einem JSON-Fehlerkörper.
+
+```sh
+# Zweite Seite à 5 Einträgen, nach Erstellungszeit aufsteigend
+curl -sS 'http://localhost:8080/api/findings?limit=5&offset=5&sort=created_at_asc'
 ```
 
 ### CSV-Format für Rechnungsimport

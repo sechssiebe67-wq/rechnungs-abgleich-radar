@@ -140,6 +140,19 @@ DEFAULT_ARTICLE_LIMIT = 50
 # (e.g. ``missing_po`` or ``duplicate``); they still count towards the report.
 NO_POSITION_LABEL = "(ohne Position)"
 
+# Whitelisted sort orders for the findings list. The keys are the public names
+# accepted by ``GET /api/findings?sort=``; the values are the matching SQL
+# ``ORDER BY`` fragments. The default (``amount_desc``) preserves the original
+# behaviour. A secondary ``id`` key keeps the order deterministic for ties and
+# for stable pagination.
+FINDING_ORDER_BY = {
+    "amount_desc": "f.amount DESC, f.id ASC",
+    "amount_asc": "f.amount ASC, f.id ASC",
+    "created_at_desc": "f.created_at DESC, f.id DESC",
+    "created_at_asc": "f.created_at ASC, f.id ASC",
+}
+DEFAULT_FINDING_ORDER = "amount_desc"
+
 
 def _impact_period(row: sqlite3.Row, prefix: str) -> dict:
     """Shape one before/after aggregate row into a report period."""
@@ -524,23 +537,14 @@ class Store:
             )
             return int(cursor.lastrowid)
 
-    def list_findings(
-        self,
-        status: Optional[str] = None,
-        min_amount: Optional[float] = None,
-        invoice_id: Optional[int] = None,
-        entities: Optional[List[str]] = None,
-    ) -> List[dict]:
-        """List findings, optionally filtered by a set of invoice entities.
-
-        Every row carries the owning invoice's ``entity`` so callers (e.g. the
-        digest) can show the society per finding. ``entities=None`` applies no
-        entity filter and stays identical to the previous behaviour.
-        """
-        query = (
-            "SELECT f.*, i.entity AS entity FROM findings f "
-            "LEFT JOIN invoices i ON i.id = f.invoice_id"
-        )
+    @staticmethod
+    def _finding_filters(
+        status: Optional[str],
+        min_amount: Optional[float],
+        invoice_id: Optional[int],
+        entities: Optional[List[str]],
+    ) -> tuple:
+        """Build the shared WHERE clauses/params for findings queries."""
         clauses: List[str] = []
         params: List[object] = []
         if entities:
@@ -556,12 +560,84 @@ class Store:
         if invoice_id is not None:
             clauses.append("f.invoice_id = ?")
             params.append(int(invoice_id))
+        return clauses, params
+
+    def list_findings(
+        self,
+        status: Optional[str] = None,
+        min_amount: Optional[float] = None,
+        invoice_id: Optional[int] = None,
+        entities: Optional[List[str]] = None,
+        limit: Optional[int] = None,
+        offset: Optional[int] = None,
+        order_by: Optional[str] = None,
+    ) -> List[dict]:
+        """List findings, optionally filtered, sorted and paged.
+
+        Every row carries the owning invoice's ``entity`` so callers (e.g. the
+        digest) can show the society per finding. ``entities=None`` applies no
+        entity filter and stays identical to the previous behaviour.
+
+        ``order_by`` must be one of :data:`FINDING_ORDER_BY`; ``None`` keeps the
+        documented default ordering (amount descending) and is fully backwards
+        compatible. ``limit``/``offset`` are applied only when provided, so an
+        unpaged call returns exactly the rows it always did.
+        """
+        if order_by is None:
+            order_by = DEFAULT_FINDING_ORDER
+        if order_by not in FINDING_ORDER_BY:
+            raise ValueError("unknown order_by: %s" % order_by)
+        if limit is not None and int(limit) < 0:
+            raise ValueError("limit must be >= 0")
+        if offset is not None and int(offset) < 0:
+            raise ValueError("offset must be >= 0")
+
+        query = (
+            "SELECT f.*, i.entity AS entity FROM findings f "
+            "LEFT JOIN invoices i ON i.id = f.invoice_id"
+        )
+        clauses, params = self._finding_filters(
+            status, min_amount, invoice_id, entities
+        )
         if clauses:
             query += " WHERE " + " AND ".join(clauses)
-        query += " ORDER BY f.amount DESC, f.id ASC"
+        query += " ORDER BY " + FINDING_ORDER_BY[order_by]
+        if limit is not None:
+            query += " LIMIT ?"
+            params.append(int(limit))
+            if offset is not None:
+                query += " OFFSET ?"
+                params.append(int(offset))
+        elif offset is not None:
+            query += " LIMIT -1 OFFSET ?"
+            params.append(int(offset))
         with self.connect() as conn:
             rows = conn.execute(query, params).fetchall()
         return [dict(row) for row in rows]
+
+    def count_findings(
+        self,
+        status: Optional[str] = None,
+        min_amount: Optional[float] = None,
+        invoice_id: Optional[int] = None,
+        entities: Optional[List[str]] = None,
+    ) -> int:
+        """Count findings matching the same filters as :meth:`list_findings`.
+
+        Used by the API to report ``total_count`` (the full filtered set)
+        independently of any ``limit``/``offset`` window.
+        """
+        query = (
+            "SELECT COUNT(*) AS c FROM findings f "
+            "LEFT JOIN invoices i ON i.id = f.invoice_id"
+        )
+        clauses, params = self._finding_filters(
+            status, min_amount, invoice_id, entities
+        )
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        with self.connect() as conn:
+            return int(conn.execute(query, params).fetchone()["c"])
 
     def get_finding(self, finding_id: int) -> Optional[dict]:
         with self.connect() as conn:
