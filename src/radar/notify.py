@@ -57,6 +57,7 @@ def _webhook_payload(digest: dict) -> dict:
         "cost_centers": cost_centers,
         "by_entity": list(digest.get("by_entity") or []),
         "by_cost_center": list(digest.get("by_cost_center") or []),
+        "by_supplier": list(digest.get("by_supplier") or []),
         "top_findings": top,
     }
 

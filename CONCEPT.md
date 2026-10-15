@@ -276,28 +276,31 @@ persistentem Speicher.
     Gesellschaften (`entities`) und die berücksichtigten Kostenstellen
     (`cost_centers`, sortiert und dedupliziert) aus; der HTML-Kopf nennt beide
     Listen (die Kostenstellen-Zeile entfällt bei leerer Liste).
-  - **Aufschlüsselung nach Gesellschaft und Kostenstelle:** Der Digest
-    beantwortet direkt die Controller-Frage „Welche Gesellschaft bzw.
-    Kostenstelle treibt das offene Abweichungsvolumen der Woche?“ — mit
-    denselben Semantiken wie `/api/stats`, aber konsistent zum Digest-Filter und
-    zum `limit`. Die Antwort enthält zwei zusätzliche Blöcke:
+  - **Aufschlüsselung nach Gesellschaft, Kostenstelle und Lieferant:** Der Digest
+    beantwortet direkt die Controller-Frage „Welche Gesellschaft, Kostenstelle
+    oder welcher Lieferant treibt das offene Abweichungsvolumen der Woche?“ —
+    mit denselben Semantiken wie `/api/stats`, aber konsistent zum
+    Digest-Filter und zum `limit`. Die Antwort enthält drei zusätzliche Blöcke:
     - `by_entity`: eine Zeile je Gesellschaft mit `entity`, `findings` und
       `open_amount` (Summe der Finding-Beträge);
     - `by_cost_center`: dieselbe Struktur je Kostenstelle (`cost_center`, leere
-      Kostenstelle als `""`).
-    Beide Listen sind absteigend nach `open_amount`, bei Gleichstand aufsteigend
+      Kostenstelle als `""`);
+    - `by_supplier`: dieselbe Struktur je Lieferant (`supplier`, Schlüssel ist
+      `invoices.supplier` des jeweiligen Findings; leere Werte bleiben `""`, die
+      Gruppe wird nicht verworfen).
+    Alle Listen sind absteigend nach `open_amount`, bei Gleichstand aufsteigend
     nach dem Gruppenschlüssel sortiert. Sie werden über **genau die Findings**
     gebildet, die der Digest ohnehin enthält (gleicher `entities`-/
     `cost_centers`-Filter, gleiches `limit`); damit gilt
     `sum(open_amount) == total_amount` und `sum(findings) == finding_count` über
-    beide Blöcke. Die bestehenden Schlüssel (`generated_at`, `period_days`,
+    alle drei Blöcke. Die bestehenden Schlüssel (`generated_at`, `period_days`,
     `total_amount`, `finding_count`, `entities`, `cost_centers`, `stats`,
     `findings`) behalten Name, Typ und Bedeutung. Der HTML-Digest zeigt unter der
-    Zusammenfassung zwei kleine Tabellen („Gesellschaften“, „Kostenstellen“);
-    ein leerer Block rendert keine Tabelle. Der Webhook-Payload
-    (`POST /api/digest/weekly/send`) enthält beide Blöcke zusätzlich, ohne die
-    übrigen Felder zu verändern. Es werden keine neuen Tabellen, Endpunkte oder
-    Laufzeit-Abhängigkeiten benötigt.
+    Zusammenfassung drei kleine Tabellen („Gesellschaften“, „Kostenstellen“,
+    „Lieferanten“); ein leerer Block rendert keine Tabelle. Der Webhook-Payload
+    (`POST /api/digest/weekly/send`) enthält alle drei Blöcke zusätzlich, ohne
+    die übrigen Felder zu verändern. Es werden keine neuen Tabellen, Endpunkte
+    oder Laufzeit-Abhängigkeiten benötigt.
   - Ein unbekannter Filterwert ist keine Fehlbedienung: Der Endpoint antwortet
     `200` mit leerer `findings`-Liste, `total_amount == 0.0`, leeren
     Aufschlüsselungsblöcken und dem angeforderten Wert in `cost_centers`
@@ -345,10 +348,10 @@ priorisiert die Freigabe-Entscheidung.
    (`?cost_center=` bzw. `{"cost_centers": [...]}`), UND-verknüpft mit dem
    Gesellschafts-Filter; die berücksichtigten Kostenstellen stehen in JSON,
    HTML, Webhook und E-Mail (`cost_centers`). **Umgesetzt:** Der Digest liefert
-   zusätzlich die Aufschlüsselung `by_entity` und `by_cost_center` (Findings und
-   offenes Volumen je Gesellschaft/Kostenstelle, absteigend nach Volumen) in
-   JSON, HTML und Webhook — konsistent zu `/api/stats` und summeninvariant zu
-   `total_amount` und `finding_count`.
+   zusätzlich die Aufschlüsselung `by_entity`, `by_cost_center` und
+   `by_supplier` (Findings und offenes Volumen je Gesellschaft/Kostenstelle/
+   Lieferant, absteigend nach Volumen) in JSON, HTML und Webhook — konsistent zu
+   `/api/stats` und summeninvariant zu `total_amount` und `finding_count`.
 5. **ROI-Nachweis — umgesetzt, inkl. Artikel-Aufschlüsselung.** Auswertung
    vermiedener Beträge (bestätigte Findings × Prüfaufwand) für den Preistest.
    Als Zwischenschritt ist die **lieferantenbezogene Precision** über
@@ -437,9 +440,10 @@ sodass die Kreditorenbuchhaltungen wöchentlich ohne Zusatzaufwand beliefert
 werden. Der Digest lässt sich dabei auf die Gesellschaften der jeweiligen
 Buchhaltung (`entities`) und zusätzlich auf einzelne Kostenstellen
 (`cost_centers`, UND-verknüpft) eingrenzen. Die mitgelieferte Aufschlüsselung
-(`by_entity`, `by_cost_center`) macht die wöchentliche Nachricht selbst
-selbsterklärend: Die Controller sehen ohne Öffnen der Weboberfläche, welche
-Gesellschaft oder Kostenstelle das offene Volumen der Woche treibt. So misst der
+(`by_entity`, `by_cost_center`, `by_supplier`) macht die wöchentliche Nachricht
+selbst selbsterklärend: Die Controller sehen ohne Öffnen der Weboberfläche,
+welche Gesellschaft, Kostenstelle oder welcher Lieferant das offene Volumen der
+Woche treibt. So misst der
 Test die tatsächliche Nutzung und die Precision weiterhin über das Feedback in
 der Oberfläche.
 
