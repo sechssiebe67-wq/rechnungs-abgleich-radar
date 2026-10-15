@@ -40,6 +40,18 @@ CREATE TABLE IF NOT EXISTS supplier_rules (
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS supplier_rule_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    supplier TEXT NOT NULL,
+    changed_at TEXT NOT NULL DEFAULT (datetime('now')),
+    tolerance_pct REAL,
+    price_drift_pct REAL,
+    duplicate_window_days INTEGER,
+    min_amount_eur REAL
+);
+CREATE INDEX IF NOT EXISTS idx_rule_history_supplier
+    ON supplier_rule_history (supplier, changed_at, id);
+
 CREATE TABLE IF NOT EXISTS reference_prices (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     supplier TEXT NOT NULL,
@@ -120,6 +132,21 @@ SUPPLIER_RULE_FIELDS = (
 )
 
 
+def _impact_period(row: sqlite3.Row, prefix: str) -> dict:
+    """Shape one before/after aggregate row into a report period."""
+    confirmed = int(row[prefix + "_confirmed"])
+    false_alarm = int(row[prefix + "_false_alarm"])
+    reviewed = confirmed + false_alarm
+    precision = (confirmed / reviewed) if reviewed else None
+    return {
+        "findings": int(row[prefix + "_findings"]),
+        "confirmed": confirmed,
+        "false_alarm": false_alarm,
+        "precision": round(precision, 4) if precision is not None else None,
+        "open_amount": round(float(row[prefix + "_open_amount"]), 2),
+    }
+
+
 class Store:
     def __init__(self, db_path: str = "radar.db") -> None:
         self.db_path = db_path
@@ -163,6 +190,16 @@ class Store:
         self.upsert_supplier(supplier)
         values = [fields.get(name) for name in SUPPLIER_RULE_FIELDS]
         with self.connect() as conn:
+            existing = conn.execute(
+                """SELECT tolerance_pct, price_drift_pct,
+                          duplicate_window_days, min_amount_eur
+                   FROM supplier_rules WHERE supplier = ?""",
+                (supplier,),
+            ).fetchone()
+            changed = existing is None or any(
+                existing[name] != value
+                for name, value in zip(SUPPLIER_RULE_FIELDS, values)
+            )
             conn.execute(
                 """INSERT INTO supplier_rules
                    (supplier, tolerance_pct, price_drift_pct,
@@ -176,6 +213,23 @@ class Store:
                        updated_at = datetime('now')""",
                 (supplier, *values),
             )
+            if changed:
+                conn.execute(
+                    """INSERT INTO supplier_rule_history
+                       (supplier, tolerance_pct, price_drift_pct,
+                        duplicate_window_days, min_amount_eur)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (supplier, *values),
+                )
+
+    def list_supplier_rule_history(self, supplier: str) -> List[dict]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """SELECT * FROM supplier_rule_history
+                   WHERE supplier = ? ORDER BY id""",
+                (supplier.strip(),),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def get_supplier_rule(self, supplier: str) -> Optional[dict]:
         with self.connect() as conn:
@@ -551,4 +605,75 @@ class Store:
                 }
             )
         results.sort(key=lambda entry: (-entry["open_amount"], entry["supplier"]))
+        return results
+
+    def rule_impact(self, settings: Optional[Settings] = None) -> List[dict]:
+        """Before/after comparison around each supplier's latest rule update.
+
+        Only suppliers with at least one :data:`supplier_rule_history` entry are
+        reported. The most recent history entry (highest ``id``) marks the
+        ``changed_at`` cut-off: findings created *before* it form ``before``,
+        findings created *at or after* it form ``after``. Each period carries
+        ``findings``, ``confirmed``, ``false_alarm``, ``precision`` (``null``
+        without feedback) and ``open_amount``. ``applied_rule`` reflects the
+        currently effective rule. Sorted by ``before.open_amount`` descending.
+        """
+        base = settings or Settings()
+        periods: List[tuple] = []
+        with self.connect() as conn:
+            latest_rows = conn.execute(
+                """SELECT h.supplier AS supplier, h.changed_at AS changed_at
+                   FROM supplier_rule_history h
+                   JOIN (
+                       SELECT supplier, MAX(id) AS id
+                       FROM supplier_rule_history
+                       GROUP BY supplier
+                   ) latest ON latest.id = h.id"""
+            ).fetchall()
+            for row in latest_rows:
+                supplier = row["supplier"]
+                changed_at = row["changed_at"]
+                aggregate = conn.execute(
+                    """SELECT
+                         COALESCE(SUM(CASE WHEN f.created_at < ? THEN 1 ELSE 0 END), 0) AS before_findings,
+                         COALESCE(SUM(CASE WHEN f.created_at < ? AND f.feedback = 'confirmed' THEN 1 ELSE 0 END), 0) AS before_confirmed,
+                         COALESCE(SUM(CASE WHEN f.created_at < ? AND f.feedback = 'false_alarm' THEN 1 ELSE 0 END), 0) AS before_false_alarm,
+                         COALESCE(SUM(CASE WHEN f.created_at < ? AND f.status = 'open' THEN f.amount ELSE 0 END), 0) AS before_open_amount,
+                         COALESCE(SUM(CASE WHEN f.created_at >= ? THEN 1 ELSE 0 END), 0) AS after_findings,
+                         COALESCE(SUM(CASE WHEN f.created_at >= ? AND f.feedback = 'confirmed' THEN 1 ELSE 0 END), 0) AS after_confirmed,
+                         COALESCE(SUM(CASE WHEN f.created_at >= ? AND f.feedback = 'false_alarm' THEN 1 ELSE 0 END), 0) AS after_false_alarm,
+                         COALESCE(SUM(CASE WHEN f.created_at >= ? AND f.status = 'open' THEN f.amount ELSE 0 END), 0) AS after_open_amount
+                       FROM findings f
+                       JOIN invoices i ON i.id = f.invoice_id
+                       WHERE i.supplier = ?""",
+                    (
+                        changed_at,
+                        changed_at,
+                        changed_at,
+                        changed_at,
+                        changed_at,
+                        changed_at,
+                        changed_at,
+                        changed_at,
+                        supplier,
+                    ),
+                ).fetchone()
+                periods.append((supplier, changed_at, aggregate))
+
+        results: List[dict] = []
+        for supplier, changed_at, aggregate in periods:
+            results.append(
+                {
+                    "supplier": supplier,
+                    "changed_at": changed_at,
+                    "before": _impact_period(aggregate, "before"),
+                    "after": _impact_period(aggregate, "after"),
+                    "applied_rule": effective_rule(
+                        base, self.get_supplier_rule(supplier)
+                    ),
+                }
+            )
+        results.sort(
+            key=lambda entry: (-entry["before"]["open_amount"], entry["supplier"])
+        )
         return results

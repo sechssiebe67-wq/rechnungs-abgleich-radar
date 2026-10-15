@@ -60,6 +60,7 @@ python3 -m unittest discover -s tests -v
 | `GET /` | Web-Oberfläche |
 | `GET /api/stats` | Kennzahlen inkl. Precision aus Feedback |
 | `GET /api/stats/by-supplier` | Precision, Findings und offenes Volumen je Lieferant inkl. angewendeter Regeln |
+| `GET /api/stats/rule-impact` | Vorher/Nachher-Vergleich der Findings und Precision je Lieferant vor/nach dem letzten Regel-Update |
 | `POST /api/suppliers` | Lieferant anlegen |
 | `GET /api/supplier-rules` | Liste aller Lieferanten-Regeln |
 | `GET /api/supplier-rules/:supplier` | Einzelne Regel oder `404` |
@@ -136,6 +137,42 @@ Regelprofile gezielt statt pauschal nachziehen.
 ```sh
 curl -sS http://localhost:8080/api/stats/by-supplier
 ```
+
+### Regel-Wirkung (Rule-Impact-Report)
+
+`GET /api/stats/rule-impact` quantifiziert, ob ein Regel-Update die Fehlalarme
+eines Lieferanten tatsächlich reduziert. Jede Änderung an einem
+Lieferanten-Regelprofil (`POST /api/supplier-rules` mit neuen Werten) wird in
+`supplier_rule_history` protokolliert; identische Upserts und Löschungen
+erzeugen keinen Eintrag. Für jeden Lieferanten mit Historie liefert der Report
+die Findings, bestätigten Treffer, Fehlalarme, Precision und das offene
+Abweichungsvolumen **vor** und **ab** dem jüngsten Regel-Update, dazu die
+aktuell wirksame Regel (`applied_rule`). Die Liste ist absteigend nach dem
+offenen Volumen im `before`-Zeitraum sortiert; `precision` ist `null`, solange
+kein Feedback vorliegt.
+
+```sh
+curl -sS http://localhost:8080/api/stats/rule-impact
+```
+
+```json
+{
+  "suppliers": [
+    {
+      "supplier": "ACME GmbH",
+      "changed_at": "2026-01-20 09:30:00",
+      "before": {"findings": 12, "confirmed": 3, "false_alarm": 9, "precision": 0.25, "open_amount": 120.0},
+      "after": {"findings": 8, "confirmed": 6, "false_alarm": 2, "precision": 0.75, "open_amount": 40.0},
+      "applied_rule": {"tolerance_pct": {"value": 1.0, "source": "supplier"}}
+    }
+  ],
+  "count": 1
+}
+```
+
+Die Web-Oberfläche zeigt den Report als Sektion „Regel-Wirkung“ mit Precision
+vorher/nachher je Lieferant; ohne Regel-Historie erscheint dort ein Hinweis
+statt einer leeren Tabelle.
 
 ## Wöchentlicher Digest
 

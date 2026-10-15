@@ -254,7 +254,7 @@ class SupplierRuleApiTests(ApiTestCase):
             rules = handle.read()
         status, payload = self.json_request("POST", "/api/supplier-rules", rules)
         self.assertEqual(status, 201)
-        self.assertEqual(payload["count"], 2)
+        self.assertEqual(payload["count"], 3)
 
 
 class SupplierPrecisionTests(ApiTestCase):
@@ -395,6 +395,59 @@ class SupplierPrecisionTests(ApiTestCase):
         self.assertIn("Precision pro Lieferant", raw)
         self.assertIn("supplier-precision", raw)
         self.assertIn("/api/stats/by-supplier", raw)
+
+
+class RuleImpactApiTests(ApiTestCase):
+    def test_empty_without_history(self):
+        status, payload = self.json_request("GET", "/api/stats/rule-impact")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload, {"suppliers": [], "count": 0})
+
+    def test_endpoint_shape_with_history(self):
+        self.json_request(
+            "POST",
+            "/api/purchase-orders",
+            {
+                "po_number": "PO-77",
+                "supplier": "ACME GmbH",
+                "items": [{"article": "Schraube M8", "quantity": 100, "unit_price": 0.40}],
+            },
+        )
+        self.json_request(
+            "POST",
+            "/api/invoices",
+            {
+                "invoice_number": "RE-1",
+                "supplier": "ACME GmbH",
+                "invoice_date": "2026-01-15",
+                "po_number": "PO-77",
+                "items": [
+                    {"article": "Schraube M8", "quantity": 100, "unit_price": 0.50}
+                ],
+            },
+        )
+        self.json_request(
+            "POST", "/api/supplier-rules", {"supplier": "ACME GmbH", "tolerance_pct": 1.0}
+        )
+
+        status, payload = self.json_request("GET", "/api/stats/rule-impact")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["count"], 1)
+        entry = payload["suppliers"][0]
+        for field in ("supplier", "changed_at", "before", "after", "applied_rule"):
+            self.assertIn(field, entry)
+        for period in ("before", "after"):
+            for field in ("findings", "confirmed", "false_alarm", "precision", "open_amount"):
+                self.assertIn(field, entry[period])
+        self.assertIsNone(entry["before"]["precision"])
+        self.assertIsNone(entry["after"]["precision"])
+
+    def test_dashboard_renders_rule_impact_section(self):
+        status, raw = self.request("GET", "/")
+        self.assertEqual(status, 200)
+        self.assertIn("Regel-Wirkung", raw)
+        self.assertIn("rule-impact", raw)
+        self.assertIn("/api/stats/rule-impact", raw)
 
 
 class DigestSendApiTests(ApiTestCase):
