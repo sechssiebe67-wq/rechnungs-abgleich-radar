@@ -39,6 +39,25 @@ class InvoiceCsvTests(unittest.TestCase):
         self.assertAlmostEqual(invoices[0].total_amount, 100 * 0.42 + 50 * 0.12, places=2)
         self.assertIsNone(invoices[1].po_number)
 
+    def test_entity_column_is_parsed_grouped_and_defaulted(self):
+        csv_text = (
+            "invoice_number,supplier,invoice_date,position,article,quantity,unit_price,po_number,entity\n"
+            "RE-1,ACME GmbH,2026-01-15,1,Schraube,100,0.42,PO-77,DE01\n"
+            "RE-1,ACME GmbH,2026-01-15,1,Schraube,100,0.42,PO-77,DE02\n"
+            "RE-2,Beta AG,2026-01-16,1,Stift,10,1.00,,\n"
+        )
+        invoices = invoices_from_csv(csv_text)
+        self.assertEqual(len(invoices), 3)
+        self.assertEqual(sorted(inv.entity for inv in invoices), ["DE01", "DE02", "default"])
+
+    def test_entity_default_parameter_is_applied(self):
+        csv_text = (
+            "invoice_number,supplier,invoice_date,position,article,quantity,unit_price\n"
+            "RE-3,ACME GmbH,2026-01-15,1,Schraube,100,0.42\n"
+        )
+        invoices = invoices_from_csv(csv_text, default_entity="DE05")
+        self.assertEqual(invoices[0].entity, "DE05")
+
     def test_german_decimal_comma_is_parsed(self):
         csv_text = (
             "invoice_number,supplier,invoice_date,position,article,quantity,unit_price,po_number\n"

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import csv
 import io
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from .models import (
     Invoice,
@@ -29,7 +29,12 @@ def _to_float(value, default: float = 0.0) -> float:
     return float(text)
 
 
-def invoice_from_dict(data: dict) -> Invoice:
+def _entity(value: Optional[str], default: str) -> str:
+    text = (value or "").strip()
+    return text or default or "default"
+
+
+def invoice_from_dict(data: dict, default_entity: str = "default") -> Invoice:
     items = []
     for idx, raw in enumerate(data.get("items", []), start=1):
         items.append(
@@ -45,6 +50,7 @@ def invoice_from_dict(data: dict) -> Invoice:
         supplier=str(data.get("supplier", "")).strip(),
         invoice_date=parse_date(data.get("invoice_date")),
         po_number=(str(data["po_number"]).strip() if data.get("po_number") else None),
+        entity=_entity(data.get("entity"), default_entity),
         items=items,
     )
 
@@ -115,8 +121,14 @@ def reference_price_from_dict(data: dict) -> ReferencePrice:
     )
 
 
-def invoices_from_csv(text: str) -> List[Invoice]:
-    """Parse long-format invoice CSV (one row per line item)."""
+def invoices_from_csv(text: str, default_entity: str = "default") -> List[Invoice]:
+    """Parse long-format invoice CSV (one row per line item).
+
+    The ``entity`` (Gesellschaft) column is optional; missing values fall back
+    to ``default_entity``. Rows are grouped by
+    ``(number, supplier, date, po, entity)`` so the same invoice number in two
+    societies stays two invoices.
+    """
     reader = csv.DictReader(io.StringIO(text))
     grouped: Dict[tuple, Invoice] = {}
     order: List[tuple] = []
@@ -125,13 +137,15 @@ def invoices_from_csv(text: str) -> List[Invoice]:
         supplier = (row.get("supplier") or "").strip()
         invoice_date = (row.get("invoice_date") or "").strip()
         po_number = (row.get("po_number") or "").strip() or None
-        key = (number, supplier, invoice_date, po_number)
+        entity = _entity(row.get("entity"), default_entity)
+        key = (number, supplier, invoice_date, po_number, entity)
         if key not in grouped:
             grouped[key] = Invoice(
                 invoice_number=number,
                 supplier=supplier,
                 invoice_date=parse_date(invoice_date),
                 po_number=po_number,
+                entity=entity,
             )
             order.append(key)
         position = row.get("position")

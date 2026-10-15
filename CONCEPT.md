@@ -10,21 +10,31 @@ mit Fundstelle, Abweichungsbetrag in Euro und Begründung.
 
 Zielbild: Prüfaufwand sinkt von Minuten pro Rechnung auf Sekunden pro Auffälligkeit.
 
+Für **KMU-Gruppen und Holdings** prüft das Radar nicht mehr nur eine Gesellschaft,
+sondern rollt den Nutzen über mehrere Gesellschaften in einem **konsolidierten
+Nachweis** auf: Jede Rechnung trägt eine Gesellschaft (`entity`), und der
+Preistest weist den vermiedenen Aufwand und die vermiedenen Fehlzahlungen **je
+Gesellschaft und über den Konzern aggregiert** aus. Ein gemeinsamer Wochen-Digest
+fasst die gewählten Gesellschaften zusammen.
+
 Der **ROI-Nachweis** (`GET /api/stats/roi`) macht diesen Nutzen für den Preistest
 in Euro greifbar: Er rechnet bestätigte Treffer in vermiedenen Prüfaufwand und
-vermiedene Fehlzahlungen um — heute je Lieferant und zusätzlich **je Artikel**,
-damit sichtbar wird, welche Artikel und Positionen den Aufwand und die
-vermiedenen Zahlungen treiben.
+vermiedene Fehlzahlungen um — je Lieferant, **je Gesellschaft** und zusätzlich
+**je Artikel**, damit sichtbar wird, welche Artikel und Positionen den Aufwand
+und die vermiedenen Zahlungen treiben.
 
 ## Intended users
 
 Finanz- und Kreditorenbuchhaltungs-Teams in KMU (5–50 Mitarbeitende) mit
 100–2.000 Eingangsrechnungen pro Monat, die heute manuell gegen Bestellungen,
-Verträge und Preislisten prüfen. Die Anwender laden Buchhaltungsexporte und
+Verträge und Preislisten prüfen. Dazu kommen **Gruppen- und
+Holding-Kreditorenbuchhaltungen**, die für mehrere rechtlich selbstständige
+Gesellschaften (z. B. `DE01`, `DE02`) buchen und den Nutzen über den Konzern
+konsolidiert nachweisen müssen. Die Anwender laden Buchhaltungsexporte und
 Referenzdaten hoch, prüfen die markierten Auffälligkeiten und geben pro Treffer
 Feedback (bestätigt / Fehlalarm). Die Teams nutzen den ROI-Nachweis als
 Argument im Preistest und schneiden die Regelprofile anhand der teuersten
-Artikelgruppen zu.
+Artikelgruppen und Gesellschaften zu.
 
 ## Problem
 
@@ -109,7 +119,26 @@ persistentem Speicher.
   aggregierten Kennzahlen, einer Tabelle je Lieferant und der Tabelle
   „Top-Artikel“; ohne bestätigte Findings erscheint ein Hinweis statt einer
   leeren Tabelle.
+- **Multi-Gesellschafts-Rollup** (Gesellschaft = `entity`, Default `default`):
+  - Jede Rechnung trägt eine Gesellschaft; die SQLite-Migration ergänzt die
+    Spalte `invoices.entity` rückwärtskompatibel (idempotent, Bestandsrechnungen
+    erhalten `default`) und hält den Index `(entity, supplier)` vor.
+  - `GET /api/entities` liefert die in den Rechnungen vorkommenden
+    Gesellschaften; `?entity=` filtert mehrfach (mehrfach angegeben) in ROI,
+    Precision je Lieferant, Rule-Impact, Findings und Digest.
+  - `GET /api/stats/roi` liefert zusätzlich einen Block `entities` (dieselbe
+    Feldstruktur wie `suppliers`) und `totals` exakt über die gefilterten
+    Gesellschaften; der Rollup ist absteigend nach vermiedenen Kosten sortiert.
+    Ein unbekannter Filtername ist keine Fehlbedienung und liefert `200` mit
+    leerer `entities`-Liste.
+  - Neue Rechnungen ohne `entity`-Feld werden der konfigurierten Gesellschaft
+    `RADAR_DEFAULT_ENTITY` (Fallback `default`) zugeordnet.
+  - Die Web-Oberfläche bietet eine Mehrfachauswahl „Gesellschaft“ und zeigt die
+    ROI-Tabelle „Gesellschaften“.
 - **Wöchentlicher Digest** als E-Mail-fähiger HTML-Report und als JSON.
+  - Der Digest berücksichtigt die gewählten Gesellschaften (`?entity=` bzw.
+    `{"entities": [...]}` beim Versand), weist den Gesamtbetrag konsolidiert und
+    die berücksichtigten Gesellschaften im Kopf des HTML-Reports je Finding aus.
 - **Digest-Versand per Webhook und SMTP** (`radar/notify.py`)
   - Aktive Zustellung des Wochen-Digests statt manuellem Abruf.
   - **Webhook** (Slack-/Mattermost-kompatibles JSON mit Gesamtbetrag, Anzahl
@@ -145,8 +174,10 @@ priorisiert die Freigabe-Entscheidung.
    `/api/supplier-rules` pflegbar.
 4. ~~Versand des Digests per SMTP/Webhook~~ **Umgesetzt:** aktive Zustellung
    über `POST /api/digest/weekly/send` bzw. den optionalen Scheduler, inkl.
-   Webhook- und SMTP-Kanälen und Helm-Konfiguration (`digest.*`). Verbleibende
-   Richtung: **Rollup über mehrere Gesellschaften** in einem gemeinsamen Digest.
+   Webhook- und SMTP-Kanälen und Helm-Konfiguration (`digest.*`). Der
+   **Rollup über mehrere Gesellschaften** ist ebenfalls umgesetzt: Der Digest
+   akzeptiert `?entity=` bzw. `{"entities": [...]}`, weist den Gesamtbetrag
+   konsolidiert und die berücksichtigten Gesellschaften aus.
 5. **ROI-Nachweis — umgesetzt, inkl. Artikel-Aufschlüsselung.** Auswertung
    vermiedener Beträge (bestätigte Findings × Prüfaufwand) für den Preistest.
    Als Zwischenschritt ist die **lieferantenbezogene Precision** über
@@ -160,8 +191,10 @@ priorisiert die Freigabe-Entscheidung.
    Zusätzlich liefert der Report den Block `articles`, der je Artikel und
    Lieferant ausweist, welche Artikel und Positionen den Aufwand und die
    vermiedenen Zahlungen treiben — sortiert nach vermiedenen Kosten und über
-   `?article_limit=` begrenzbar. **Verbleibend:** nur noch der Rollup über
-   mehrere Gesellschaften.
+   `?article_limit=` begrenzbar. **Umgesetzt:** der **Rollup über mehrere
+   Gesellschaften** über den Block `entities` und `?entity=` (mehrfach). Die
+   verbleibende Produktrichtung sind OCR-/PDF-Extraktion und das
+   Fuzzy-Matching uneinheitlicher Bezeichnungen (Punkte 1 und 2).
 
 ## Validation plan (Bezug zur Produkthypothese)
 
@@ -175,16 +208,20 @@ Fehlalarme eines Lieferanten tatsächlich reduziert. Der **Rule-Impact-Report**
 explizit vor und nach dem jüngsten Regel-Update gegenüber und macht den Effekt
 einer Nachjustierung direkt sichtbar. Der **ROI-Nachweis** übersetzt das
 Feedback schließlich in vermiedene Prüfkosten und vermiedene Fehlzahlungen — je
-Lieferant und je **Artikel** — und zeigt so im Preistest, welche wiederkehrenden
-Artikelgruppen den Nutzen treiben und wo sich ein Regelprofil gezielt
-zuschneiden lässt. Die Feedback- und Digest-Funktionen dieses Inkrements liefern
-dafür die Messgrößen.
+Lieferant, je **Gesellschaft** und je **Artikel** — und zeigt so im Preistest,
+welche wiederkehrenden Artikelgruppen und Gesellschaften den Nutzen treiben und
+wo sich ein Regelprofil gezielt zuschneiden lässt. Die **Auswertung je
+Gesellschaft** (`entities`-Block, `?entity=`-Filter) erlaubt es Gruppen- und
+Holding-Kreditorenbuchhaltungen, den konsolidierten Konzernnutzen und den
+Beitrag jeder Gesellschaft getrennt zu belegen. Die Feedback- und
+Digest-Funktionen dieses Inkrements liefern dafür die Messgrößen.
 
 Der **Digest-Versand** unterstützt den Concierge-Test direkt: Der Wochen-Digest
 wird den Testkunden per Webhook/SMTP aktiv zugestellt (statt manuellem Abruf),
 sodass die Kreditorenbuchhaltungen wöchentlich ohne Zusatzaufwand beliefert
-werden. So misst der Test die tatsächliche Nutzung und die Precision
-weiterhin über das Feedback in der Oberfläche.
+werden. Der Digest lässt sich dabei auf die Gesellschaften der jeweiligen
+Buchhaltung eingrenzen (`entities`). So misst der Test die tatsächliche Nutzung
+und die Precision weiterhin über das Feedback in der Oberfläche.
 
 ## Delivery contract
 

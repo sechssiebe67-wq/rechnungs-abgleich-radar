@@ -42,6 +42,10 @@ config:
   duplicateWindowDays: "45"
   reviewMinutesPerFinding: "4"
   reviewHourlyRateEur: "45"
+  # Society assigned to new invoices without an explicit ``entity``. Informational
+  # only: existing/imported invoices keep their own entity and the database
+  # default stays ``default``.
+  defaultEntity: "default"
 
 auth:
   enabled: false

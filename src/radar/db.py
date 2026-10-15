@@ -89,6 +89,7 @@ CREATE TABLE IF NOT EXISTS invoices (
     invoice_date TEXT,
     po_number TEXT,
     total_amount REAL NOT NULL DEFAULT 0,
+    entity TEXT NOT NULL DEFAULT 'default',
     reconciled_at TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -173,6 +174,28 @@ class Store:
     def init(self) -> None:
         with self.connect() as conn:
             conn.executescript(SCHEMA)
+            self._migrate(conn)
+
+    @staticmethod
+    def _migrate(conn: sqlite3.Connection) -> None:
+        """Bring an existing database up to the current schema.
+
+        SQLite cannot add a column via ``CREATE TABLE IF NOT EXISTS``, so legacy
+        databases that predate the multi-entity rollup are upgraded in place.
+        The check is idempotent and never drops data; existing invoices receive
+        the ``default`` entity.
+        """
+        columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(invoices)").fetchall()
+        }
+        if "entity" not in columns:
+            conn.execute(
+                "ALTER TABLE invoices ADD COLUMN entity TEXT NOT NULL DEFAULT 'default'"
+            )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_invoices_entity "
+            "ON invoices (entity, supplier)"
+        )
 
     # -- reference data ---------------------------------------------------
 
@@ -367,10 +390,12 @@ class Store:
     def add_invoice(self, invoice: Invoice) -> int:
         self.upsert_supplier(invoice.supplier)
         with self.connect() as conn:
+            entity = (invoice.entity or "default").strip() or "default"
             cursor = conn.execute(
                 """INSERT INTO invoices
-                   (invoice_number, invoice_norm, supplier, invoice_date, po_number, total_amount)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
+                   (invoice_number, invoice_norm, supplier, invoice_date, po_number,
+                    total_amount, entity)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (
                     invoice.invoice_number.strip(),
                     normalize_document_number(invoice.invoice_number),
@@ -378,6 +403,7 @@ class Store:
                     invoice.invoice_date.isoformat() if invoice.invoice_date else None,
                     invoice.po_number.strip() if invoice.po_number else None,
                     invoice.total_amount,
+                    entity,
                 ),
             )
             invoice_id = int(cursor.lastrowid)
@@ -414,6 +440,7 @@ class Store:
             supplier=row["supplier"],
             invoice_date=parse_date(row["invoice_date"]),
             po_number=row["po_number"],
+            entity=row["entity"] or "default",
             items=[
                 InvoiceItem(
                     position=r["position"],
@@ -436,6 +463,16 @@ class Store:
                    ORDER BY i.created_at DESC, i.id DESC"""
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def list_entities(self) -> List[str]:
+        """Return the distinct, sorted entities occurring in invoices."""
+        with self.connect() as conn:
+            rows = conn.execute(
+                """SELECT DISTINCT entity FROM invoices
+                   WHERE entity IS NOT NULL AND entity <> ''
+                   ORDER BY entity"""
+            ).fetchall()
+        return [row["entity"] for row in rows]
 
     def invoice_items(self, invoice_id: int) -> List[dict]:
         with self.connect() as conn:
@@ -492,22 +529,36 @@ class Store:
         status: Optional[str] = None,
         min_amount: Optional[float] = None,
         invoice_id: Optional[int] = None,
+        entities: Optional[List[str]] = None,
     ) -> List[dict]:
-        query = "SELECT * FROM findings"
-        clauses = []
+        """List findings, optionally filtered by a set of invoice entities.
+
+        Every row carries the owning invoice's ``entity`` so callers (e.g. the
+        digest) can show the society per finding. ``entities=None`` applies no
+        entity filter and stays identical to the previous behaviour.
+        """
+        query = (
+            "SELECT f.*, i.entity AS entity FROM findings f "
+            "LEFT JOIN invoices i ON i.id = f.invoice_id"
+        )
+        clauses: List[str] = []
         params: List[object] = []
+        if entities:
+            placeholders = ", ".join("?" for _ in entities)
+            clauses.append("i.entity IN (%s)" % placeholders)
+            params.extend(entities)
         if status:
-            clauses.append("status = ?")
+            clauses.append("f.status = ?")
             params.append(status)
         if min_amount is not None:
-            clauses.append("amount >= ?")
+            clauses.append("f.amount >= ?")
             params.append(float(min_amount))
         if invoice_id is not None:
-            clauses.append("invoice_id = ?")
+            clauses.append("f.invoice_id = ?")
             params.append(int(invoice_id))
         if clauses:
             query += " WHERE " + " AND ".join(clauses)
-        query += " ORDER BY amount DESC, id ASC"
+        query += " ORDER BY f.amount DESC, f.id ASC"
         with self.connect() as conn:
             rows = conn.execute(query, params).fetchall()
         return [dict(row) for row in rows]
@@ -567,16 +618,28 @@ class Store:
             "precision": round(precision, 4) if precision is not None else None,
         }
 
-    def stats_by_supplier(self, settings: Optional[Settings] = None) -> List[dict]:
+    def stats_by_supplier(
+        self,
+        settings: Optional[Settings] = None,
+        entities: Optional[List[str]] = None,
+    ) -> List[dict]:
         """Per-supplier breakdown of findings, feedback and applied thresholds.
 
         Returns one entry per known supplier, sorted by open deviation volume
         (descending) and then by supplier name. Suppliers without findings are
         included with zeros and ``precision: null``. ``applied_rule`` mirrors
         :func:`radar.config.effective_rule` so callers can see which supplier
-        overrides were in effect without a second request.
+        overrides were in effect without a second request. When ``entities`` is
+        given the view is restricted to invoices of those societies; suppliers
+        without any invoice in scope are omitted.
         """
         base = settings or Settings()
+        entity_clause = ""
+        params: List[object] = []
+        if entities:
+            placeholders = ", ".join("?" for _ in entities)
+            entity_clause = " WHERE i.entity IN (%s)" % placeholders
+            params = list(entities)
         with self.connect() as conn:
             rows = conn.execute(
                 """SELECT s.name AS supplier,
@@ -590,7 +653,10 @@ class Store:
                    FROM suppliers s
                    LEFT JOIN invoices i ON i.supplier = s.name
                    LEFT JOIN findings f ON f.invoice_id = i.id
+                   %s
                    GROUP BY s.name"""
+                % entity_clause,
+                params,
             ).fetchall()
 
         results: List[dict] = []
@@ -621,6 +687,7 @@ class Store:
         review_minutes: Optional[float] = None,
         hourly_rate: Optional[float] = None,
         article_limit: Optional[int] = None,
+        entities: Optional[List[str]] = None,
     ) -> dict:
         """Turn accumulated feedback into a defensible ROI number.
 
@@ -643,6 +710,16 @@ class Store:
         entries (default :data:`DEFAULT_ARTICLE_LIMIT`, ``>= 0``). The article
         view never changes ``suppliers`` or ``totals``.
 
+        ``entities`` is an *additional* grouped view and filter for the
+        multi-entity rollup: when given, findings/invoices are restricted to
+        those societies, ``suppliers``/``articles`` are filtered accordingly and
+        ``totals`` covers exactly the filtered societies. The ``entities`` block
+        uses the same fields as ``suppliers`` and is sorted by avoided cost
+        (descending), then confirmed amount. ``entities=None`` applies no filter
+        (all societies), which for pre-rollup data equals the ``default``
+        society. An unknown filter yields an empty ``entities`` list and zeroed
+        totals rather than an error.
+
         ``review_minutes`` and ``hourly_rate`` default to the values from
         ``settings`` and may be overridden per call for what-if analyses.
         """
@@ -663,6 +740,13 @@ class Store:
         if limit < 0:
             raise ValueError("article_limit must be >= 0")
 
+        entity_clause = ""
+        entity_params: List[object] = []
+        if entities:
+            placeholders = ", ".join("?" for _ in entities)
+            entity_clause = " WHERE i.entity IN (%s)" % placeholders
+            entity_params = list(entities)
+
         with self.connect() as conn:
             rows = conn.execute(
                 """SELECT s.name AS supplier,
@@ -680,7 +764,10 @@ class Store:
                    FROM suppliers s
                    LEFT JOIN invoices i ON i.supplier = s.name
                    LEFT JOIN findings f ON f.invoice_id = i.id
+                   %s
                    GROUP BY s.name"""
+                % entity_clause,
+                entity_params,
             ).fetchall()
             article_rows = conn.execute(
                 """SELECT i.supplier AS supplier,
@@ -700,7 +787,30 @@ class Store:
                    FROM findings f
                    JOIN invoices i ON i.id = f.invoice_id
                    LEFT JOIN invoice_items ii ON ii.id = f.invoice_item_id
+                   %s
                    GROUP BY i.supplier, COALESCE(ii.article_norm, '')"""
+                % entity_clause,
+                entity_params,
+            ).fetchall()
+            entity_rows = conn.execute(
+                """SELECT i.entity AS entity,
+                          COUNT(f.id) AS findings,
+                          COALESCE(SUM(CASE WHEN f.feedback = 'confirmed'
+                                            THEN 1 ELSE 0 END), 0) AS confirmed,
+                          COALESCE(SUM(CASE WHEN f.feedback = 'false_alarm'
+                                            THEN 1 ELSE 0 END), 0) AS false_alarm,
+                          COALESCE(SUM(CASE WHEN f.status = 'open'
+                                            THEN 1 ELSE 0 END), 0) AS open,
+                          COALESCE(SUM(CASE WHEN f.status = 'open'
+                                            THEN f.amount ELSE 0 END), 0) AS open_amount,
+                          COALESCE(SUM(CASE WHEN f.feedback = 'confirmed'
+                                            THEN f.amount ELSE 0 END), 0) AS confirmed_amount
+                   FROM invoices i
+                   LEFT JOIN findings f ON f.invoice_id = i.id
+                   %s
+                   GROUP BY i.entity"""
+                % entity_clause,
+                entity_params,
             ).fetchall()
 
         suppliers: List[dict] = []
@@ -787,6 +897,37 @@ class Store:
         )
         articles = articles[:limit]
 
+        entities_out: List[dict] = []
+        for row in entity_rows:
+            confirmed = int(row["confirmed"])
+            false_alarm = int(row["false_alarm"])
+            reviewed = confirmed + false_alarm
+            precision = (confirmed / reviewed) if reviewed else None
+            avoided_minutes = round(confirmed * minutes, 2)
+            entities_out.append(
+                {
+                    "entity": row["entity"] or "default",
+                    "findings": int(row["findings"]),
+                    "confirmed": confirmed,
+                    "false_alarm": false_alarm,
+                    "open": int(row["open"]),
+                    "open_amount": round(float(row["open_amount"]), 2),
+                    "precision": round(precision, 4)
+                    if precision is not None
+                    else None,
+                    "confirmed_amount": round(float(row["confirmed_amount"]), 2),
+                    "avoided_review_minutes": avoided_minutes,
+                    "avoided_review_cost_eur": round(avoided_minutes / 60 * rate, 2),
+                }
+            )
+        entities_out.sort(
+            key=lambda entry: (
+                -entry["avoided_review_cost_eur"],
+                -entry["confirmed_amount"],
+                entry["entity"],
+            )
+        )
+
         reviewed_total = total_confirmed + total_false_alarm
         total_precision = (total_confirmed / reviewed_total) if reviewed_total else None
         total_minutes = round(total_confirmed * minutes, 2)
@@ -807,6 +948,7 @@ class Store:
         return {
             "suppliers": suppliers,
             "articles": articles,
+            "entities": entities_out,
             "totals": totals,
             "parameters": {
                 "review_minutes_per_finding": minutes,
@@ -815,7 +957,11 @@ class Store:
             },
         }
 
-    def rule_impact(self, settings: Optional[Settings] = None) -> List[dict]:
+    def rule_impact(
+        self,
+        settings: Optional[Settings] = None,
+        entities: Optional[List[str]] = None,
+    ) -> List[dict]:
         """Before/after comparison around each supplier's latest rule update.
 
         Only suppliers with at least one :data:`supplier_rule_history` entry are
@@ -825,8 +971,13 @@ class Store:
         ``findings``, ``confirmed``, ``false_alarm``, ``precision`` (``null``
         without feedback) and ``open_amount``. ``applied_rule`` reflects the
         currently effective rule. Sorted by ``before.open_amount`` descending.
+        When ``entities`` is given, only findings of those societies are counted.
         """
         base = settings or Settings()
+        entity_clause = ""
+        if entities:
+            placeholders = ", ".join("?" for _ in entities)
+            entity_clause = " AND i.entity IN (%s)" % placeholders
         periods: List[tuple] = []
         with self.connect() as conn:
             latest_rows = conn.execute(
@@ -853,7 +1004,7 @@ class Store:
                          COALESCE(SUM(CASE WHEN f.created_at >= ? AND f.status = 'open' THEN f.amount ELSE 0 END), 0) AS after_open_amount
                        FROM findings f
                        JOIN invoices i ON i.id = f.invoice_id
-                       WHERE i.supplier = ?""",
+                       WHERE i.supplier = ?""" + entity_clause,
                     (
                         changed_at,
                         changed_at,
@@ -864,7 +1015,8 @@ class Store:
                         changed_at,
                         changed_at,
                         supplier,
-                    ),
+                    )
+                    + (tuple(entities) if entities else ()),
                 ).fetchone()
                 periods.append((supplier, changed_at, aggregate))
 

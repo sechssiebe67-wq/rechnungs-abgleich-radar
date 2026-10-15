@@ -12,7 +12,7 @@ import json
 import smtplib
 import urllib.request
 from email.message import EmailMessage
-from typing import Callable, Dict, List
+from typing import Callable, Dict, List, Optional
 
 from .config import Settings
 from .db import Store
@@ -38,14 +38,17 @@ def _webhook_payload(digest: dict) -> dict:
     ]
     total = round(float(digest.get("total_amount", 0)), 2)
     count = int(digest.get("finding_count", 0))
+    entities = list(digest.get("entities") or [])
+    scope = ", ".join(str(entity) for entity in entities) or "alle Gesellschaften"
     text = (
-        "%s: %d offene Auffälligkeiten, %.2f EUR potenzielles "
-        "Abweichungsvolumen." % (WEBHOOK_SUBJECT, count, total)
+        "%s (%s): %d offene Auffälligkeiten, %.2f EUR potenzielles "
+        "Abweichungsvolumen." % (WEBHOOK_SUBJECT, scope, count, total)
     )
     return {
         "text": text,
         "total_amount": total,
         "finding_count": count,
+        "entities": entities,
         "top_findings": top,
     }
 
@@ -123,13 +126,17 @@ def _deliver(
         return {"channel": channel, "status": "error", "detail": str(exc)}
 
 
-def deliver_digest(store: Store, settings: Settings) -> dict:
+def deliver_digest(
+    store: Store, settings: Settings, entities: Optional[List[str]] = None
+) -> dict:
     """Deliver the current weekly digest over every configured channel.
 
-    Always returns both channel entries. Unconfigured channels are reported as
-    ``skipped``; a failure in one channel is isolated from the other.
+    ``entities`` optionally restricts the digest (and the webhook payload) to
+    the selected societies. Always returns both channel entries. Unconfigured
+    channels are reported as ``skipped``; a failure in one channel is isolated
+    from the other.
     """
-    digest = weekly_digest(store)
+    digest = weekly_digest(store, entities=entities)
 
     webhook_configured = bool(settings.digest_webhook_url)
     email_configured = bool(settings.digest_smtp_host and settings.digest_smtp_to)

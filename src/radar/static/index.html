@@ -38,18 +38,29 @@
 </header>
 <main>
   <section>
+    <h2>Gesellschaften <span class="muted">(Filter für ROI, Digest und Kennzahlen; Mehrfachauswahl)</span></h2>
+    <select id="entity-filter" multiple size="4" onchange="refresh()"></select>
+    <p class="muted" id="entity-hint">Ohne Auswahl werden alle Gesellschaften berücksichtigt.</p>
+  </section>
+
+  <section>
     <h2>Kennzahlen</h2>
     <div class="metrics" id="metrics"></div>
   </section>
 
   <section>
     <h2>Offene Auffälligkeiten <span class="muted">(priorisiert nach Abweichungsbetrag)</span></h2>
-    <p><a href="/api/digest/weekly.html" target="_blank" rel="noreferrer">Wochen-Digest öffnen</a> ·
-       <a href="/api/digest/weekly" target="_blank" rel="noreferrer">als JSON</a></p>
+    <p><a id="digest-html-link" href="/api/digest/weekly.html" target="_blank" rel="noreferrer">Wochen-Digest öffnen</a> ·
+       <a id="digest-json-link" href="/api/digest/weekly" target="_blank" rel="noreferrer">als JSON</a></p>
     <table>
       <thead><tr><th>Art</th><th>Begründung</th><th class="amount">Betrag</th><th>Feedback</th></tr></thead>
       <tbody id="findings"><tr><td colspan="4" class="muted">Lade …</td></tr></tbody>
     </table>
+  </section>
+
+  <section>
+    <h2>Wochen-Digest <span class="muted">(berücksichtigte Gesellschaften)</span></h2>
+    <p class="muted" id="digest-entities">Lade …</p>
   </section>
 
   <section>
@@ -78,6 +89,12 @@
     <table id="roi-table" style="margin-top:.75rem">
       <thead><tr><th>Lieferant</th><th class="amount">Findings</th><th class="amount">Bestätigt</th><th class="amount">Fehlalarm</th><th class="amount">Precision</th><th class="amount">Bestätigtes Volumen</th><th class="amount">Vermiedene Minuten</th><th class="amount">Vermiedene Kosten</th></tr></thead>
       <tbody id="roi-suppliers"><tr><td colspan="8" class="muted">Lade …</td></tr></tbody>
+    </table>
+    <h3 style="margin:1.25rem 0 .25rem; font-size:.9rem;">Gesellschaften <span class="muted">(konsolidiert je Gesellschaft)</span></h3>
+    <p class="muted" id="roi-entities-hint"></p>
+    <table id="roi-entities-table" style="margin-top:.5rem">
+      <thead><tr><th>Gesellschaft</th><th class="amount">Findings</th><th class="amount">Bestätigt</th><th class="amount">Fehlalarm</th><th class="amount">Precision</th><th class="amount">Bestätigtes Volumen</th><th class="amount">Vermiedene Minuten</th><th class="amount">Vermiedene Kosten</th></tr></thead>
+      <tbody id="roi-entities"><tr><td colspan="8" class="muted">Lade …</td></tr></tbody>
     </table>
     <h3 style="margin:1.25rem 0 .25rem; font-size:.9rem;">Top-Artikel <span class="muted">(nach vermiedenen Kosten)</span></h3>
     <p class="muted" id="roi-articles-hint"></p>
@@ -150,8 +167,38 @@ async function loadMetrics() {
     ['Bestätigt', d.confirmed], ['Fehlalarm', d.false_alarm],
   ].map(([label, value]) => `<div class="metric"><div class="value">${esc(value)}</div><div class="label">${esc(label)}</div></div>`).join('');
 }
+function selectedEntities() {
+  const sel = document.getElementById('entity-filter');
+  if (!sel) return [];
+  return Array.from(sel.selectedOptions).map(o => o.value);
+}
+function entityQuery() {
+  const entities = selectedEntities();
+  if (!entities.length) return '';
+  return '?' + entities.map(e => 'entity=' + encodeURIComponent(e)).join('&');
+}
+async function loadEntities() {
+  const d = await api('/api/entities');
+  const sel = document.getElementById('entity-filter');
+  if (!sel) return;
+  const previous = new Set(selectedEntities());
+  sel.innerHTML = (d.entities || [])
+    .map(e => `<option value="${esc(e)}">${esc(e)}</option>`).join('');
+  Array.from(sel.options).forEach(o => { if (previous.has(o.value)) o.selected = true; });
+}
+async function loadDigest() {
+  const d = await api('/api/digest/weekly' + entityQuery());
+  const entities = d.entities || [];
+  document.getElementById('digest-entities').textContent = entities.length
+    ? `Berücksichtigte Gesellschaften: ${entities.join(', ')} — ${money(d.total_amount || 0)} aus ${d.finding_count || 0} Auffälligkeiten.`
+    : 'Keine offenen Auffälligkeiten.';
+  const htmlLink = document.getElementById('digest-html-link');
+  const jsonLink = document.getElementById('digest-json-link');
+  if (htmlLink) htmlLink.href = '/api/digest/weekly.html' + entityQuery();
+  if (jsonLink) jsonLink.href = '/api/digest/weekly' + entityQuery();
+}
 async function loadFindings() {
-  const d = await api('/api/findings?status=open');
+  const d = await api('/api/findings?status=open' + (entityQuery() ? '&' + entityQuery().slice(1) : ''));
   const rows = d.findings.map(f => `<tr>
     <td>${esc(f.finding_type)}</td>
     <td>${esc(f.message)}<div class="muted">Ref: ${esc(f.reference_value || '')} · Ist: ${esc(f.actual_value || '')}</div></td>
@@ -163,7 +210,7 @@ async function loadFindings() {
   document.getElementById('findings').innerHTML = rows || '<tr><td colspan="4" class="muted">Keine offenen Auffälligkeiten.</td></tr>';
 }
 async function loadSupplierPrecision() {
-  const d = await api('/api/stats/by-supplier');
+  const d = await api('/api/stats/by-supplier' + entityQuery());
   const rows = d.suppliers.map(s => {
     const precision = s.precision == null ? '—' : Math.round(s.precision * 100) + '%';
     const tol = s.applied_rule && s.applied_rule.tolerance_pct;
@@ -182,7 +229,7 @@ async function loadSupplierPrecision() {
 }
 function pct(v) { return v == null ? '—' : Math.round(v * 100) + '%'; }
 async function loadRuleImpact() {
-  const d = await api('/api/stats/rule-impact');
+  const d = await api('/api/stats/rule-impact' + entityQuery());
   const rows = d.suppliers.map(s => {
     const before = s.before || {};
     const after = s.after || {};
@@ -198,7 +245,7 @@ async function loadRuleImpact() {
   document.getElementById('rule-impact').innerHTML = rows || '<tr><td colspan="6" class="muted">Keine Regel-Historie vorhanden — Regeländerungen erscheinen hier.</td></tr>';
 }
 async function loadRoi() {
-  const d = await api('/api/stats/roi');
+  const d = await api('/api/stats/roi' + entityQuery());
   const t = d.totals || {};
   const hours = (t.avoided_review_minutes || 0) / 60;
   document.getElementById('roi-metrics').innerHTML = [
@@ -228,6 +275,27 @@ async function loadRoi() {
       <td class="amount">${money(s.avoided_review_cost_eur)}</td>
     </tr>`).join('');
     document.getElementById('roi-suppliers').innerHTML = rows || '<tr><td colspan="8" class="muted">Keine Lieferanten mit Feedback.</td></tr>';
+  }
+
+  const entities = d.entities || [];
+  const entitiesTable = document.getElementById('roi-entities-table');
+  if (entities.length) {
+    document.getElementById('roi-entities-hint').textContent = '';
+    entitiesTable.style.display = '';
+    document.getElementById('roi-entities').innerHTML = entities.map(e => `<tr>
+      <td>${esc(e.entity)}</td>
+      <td class="amount">${esc(e.findings)}</td>
+      <td class="amount">${esc(e.confirmed)}</td>
+      <td class="amount">${esc(e.false_alarm)}</td>
+      <td class="amount">${pct(e.precision)}</td>
+      <td class="amount">${money(e.confirmed_amount)}</td>
+      <td class="amount">${esc(e.avoided_review_minutes)}</td>
+      <td class="amount">${money(e.avoided_review_cost_eur)}</td>
+    </tr>`).join('');
+  } else {
+    document.getElementById('roi-entities-hint').textContent = 'Keine Gesellschaften im gewählten Filter.';
+    entitiesTable.style.display = 'none';
+    document.getElementById('roi-entities').innerHTML = '';
   }
 
   const articles = d.articles || [];
@@ -294,7 +362,10 @@ async function reconcileAll() {
   await api('/api/reconcile', {method:'POST', headers:{'Content-Type':'application/json'}, body: '{}'});
   await refresh();
 }
-async function refresh() { await Promise.all([loadMetrics(), loadFindings(), loadSupplierPrecision(), loadSupplierRules(), loadRuleImpact(), loadRoi()]); }
+async function refresh() {
+  await loadEntities();
+  await Promise.all([loadMetrics(), loadFindings(), loadSupplierPrecision(), loadSupplierRules(), loadRuleImpact(), loadRoi(), loadDigest()]);
+}
 loadHealth(); refresh();
 </script>
 </body>

@@ -62,6 +62,9 @@ class Invoice:
     items: List[InvoiceItem] = field(default_factory=list)
     po_number: Optional[str] = None
     invoice_id: Optional[int] = None
+    # Legal entity (Gesellschaft) the invoice belongs to; used for the
+    # multi-entity rollup. ``"default"`` keeps single-entity data working.
+    entity: str = "default"
 
     @property
     def total_amount(self) -> float:
