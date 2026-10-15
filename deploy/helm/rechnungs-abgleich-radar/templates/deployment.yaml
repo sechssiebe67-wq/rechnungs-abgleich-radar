@@ -43,6 +43,10 @@ spec:
               value: {{ .Values.config.priceDriftPct | quote }}
             - name: RADAR_DUPLICATE_WINDOW_DAYS
               value: {{ .Values.config.duplicateWindowDays | quote }}
+            - name: RADAR_REVIEW_MINUTES_PER_FINDING
+              value: {{ .Values.config.reviewMinutesPerFinding | quote }}
+            - name: RADAR_REVIEW_HOURLY_RATE_EUR
+              value: {{ .Values.config.reviewHourlyRateEur | quote }}
             {{- if .Values.auth.enabled }}
             - name: RADAR_API_TOKEN
               valueFrom:

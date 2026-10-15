@@ -58,5 +58,36 @@ class DigestConfigTests(unittest.TestCase):
                 self.assertTrue(Settings.from_env().digest_smtp_use_tls, raw)
 
 
+class RoiConfigTests(unittest.TestCase):
+    def test_defaults(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            settings = Settings.from_env()
+        self.assertEqual(settings.review_minutes_per_finding, 4.0)
+        self.assertEqual(settings.review_hourly_rate_eur, 45.0)
+
+    def test_from_env(self):
+        env = {
+            "RADAR_REVIEW_MINUTES_PER_FINDING": "6.5",
+            "RADAR_REVIEW_HOURLY_RATE_EUR": "80",
+        }
+        with mock.patch.dict(os.environ, env, clear=True):
+            settings = Settings.from_env()
+        self.assertEqual(settings.review_minutes_per_finding, 6.5)
+        self.assertEqual(settings.review_hourly_rate_eur, 80.0)
+
+    def test_invalid_or_negative_values_fall_back_to_default(self):
+        for raw in ("abc", "-3"):
+            with mock.patch.dict(
+                os.environ, {"RADAR_REVIEW_MINUTES_PER_FINDING": raw}, clear=True
+            ):
+                self.assertEqual(
+                    Settings.from_env().review_minutes_per_finding, 4.0, raw
+                )
+        with mock.patch.dict(
+            os.environ, {"RADAR_REVIEW_HOURLY_RATE_EUR": "-1"}, clear=True
+        ):
+            self.assertEqual(Settings.from_env().review_hourly_rate_eur, 45.0)
+
+
 if __name__ == "__main__":
     unittest.main()
