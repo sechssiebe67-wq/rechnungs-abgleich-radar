@@ -163,8 +163,17 @@ INVOICE_ORDER_BY = {
     "created_at_asc": "i.created_at ASC, i.id ASC",
     "invoice_number_asc": "i.invoice_number ASC, i.id ASC",
     "invoice_number_desc": "i.invoice_number DESC, i.id DESC",
+    "open_amount_desc": "open_amount DESC, i.id ASC",
+    "open_amount_asc": "open_amount ASC, i.id ASC",
+    "open_finding_count_desc": "open_finding_count DESC, i.id ASC",
+    "open_finding_count_asc": "open_finding_count ASC, i.id ASC",
 }
 DEFAULT_INVOICE_ORDER = "created_at_desc"
+
+# Review-status values accepted by ``GET /api/findings?review_status=`` and used
+# for the per-invoice ``review_status`` classification. ``all`` means "no
+# filter" and is the backwards-compatible default.
+REVIEW_STATUS_VALUES = ("all", "open", "reviewed")
 
 # Whitelisted sort orders for the supplier-rule list. ``supplier_asc`` is the
 # default and reproduces the original ``ORDER BY supplier``. ``supplier`` is the
@@ -573,10 +582,16 @@ class Store:
 
         query = (
             """SELECT i.*,
-                      (SELECT COUNT(*) FROM findings f WHERE f.invoice_id = i.id) AS finding_count,
-                      (SELECT COALESCE(SUM(amount), 0) FROM findings f
-                         WHERE f.invoice_id = i.id AND f.status = 'open') AS open_amount
+                      COUNT(f.id) AS finding_count,
+                      COALESCE(SUM(CASE WHEN f.id IS NOT NULL AND f.feedback IS NULL
+                                        THEN 1 ELSE 0 END), 0) AS open_finding_count,
+                      COALESCE(SUM(CASE WHEN f.id IS NOT NULL AND f.feedback IS NOT NULL
+                                        THEN 1 ELSE 0 END), 0) AS reviewed_finding_count,
+                      COALESCE(SUM(CASE WHEN f.status = 'open'
+                                        THEN f.amount ELSE 0 END), 0) AS open_amount
                FROM invoices i
+               LEFT JOIN findings f ON f.invoice_id = i.id
+               GROUP BY i.id
                ORDER BY """
             + INVOICE_ORDER_BY[order_by]
         )
@@ -592,7 +607,19 @@ class Store:
             params.append(int(offset))
         with self.connect() as conn:
             rows = conn.execute(query, params).fetchall()
-        return [dict(row) for row in rows]
+        results: List[dict] = []
+        for row in rows:
+            entry = dict(row)
+            finding_count = int(entry["finding_count"])
+            open_count = int(entry["open_finding_count"])
+            if finding_count == 0:
+                entry["review_status"] = "clean"
+            elif open_count > 0:
+                entry["review_status"] = "open"
+            else:
+                entry["review_status"] = "reviewed"
+            results.append(entry)
+        return results
 
     def count_invoices(self) -> int:
         """Count all invoices, independent of any pagination window."""
@@ -676,6 +703,7 @@ class Store:
         invoice_id: Optional[int],
         entities: Optional[List[str]],
         cost_centers: Optional[List[str]],
+        review_status: Optional[str] = None,
     ) -> tuple:
         """Build the shared WHERE clauses/params for findings queries."""
         clauses: List[str] = []
@@ -697,6 +725,23 @@ class Store:
         if invoice_id is not None:
             clauses.append("f.invoice_id = ?")
             params.append(int(invoice_id))
+        if review_status and review_status != "all":
+            if review_status == "open":
+                clauses.append(
+                    "f.invoice_id IN (SELECT invoice_id FROM findings "
+                    "WHERE feedback IS NULL)"
+                )
+            elif review_status == "reviewed":
+                clauses.append(
+                    "f.invoice_id IN (SELECT invoice_id FROM findings "
+                    "GROUP BY invoice_id "
+                    "HAVING SUM(CASE WHEN feedback IS NULL THEN 1 ELSE 0 END) = 0)"
+                )
+            else:
+                raise ValueError(
+                    "review_status must be one of: %s"
+                    % ", ".join(REVIEW_STATUS_VALUES)
+                )
         return clauses, params
 
     def list_findings(
@@ -706,6 +751,7 @@ class Store:
         invoice_id: Optional[int] = None,
         entities: Optional[List[str]] = None,
         cost_centers: Optional[List[str]] = None,
+        review_status: Optional[str] = None,
         limit: Optional[int] = None,
         offset: Optional[int] = None,
         order_by: Optional[str] = None,
@@ -720,6 +766,11 @@ class Store:
         ``cost_centers`` filters on the owning invoice's cost center and is
         AND-combined with ``entities`` (an unknown value yields an empty list,
         not an error). ``None`` applies no cost-center filter.
+
+        ``review_status`` adds the per-invoice review axis: ``open`` keeps the
+        findings of invoices that have at least one finding without feedback,
+        ``reviewed`` keeps those of invoices whose findings all have feedback,
+        and ``None``/``all`` applies no filter (backwards compatible).
 
         ``order_by`` must be one of :data:`FINDING_ORDER_BY`; ``None`` keeps the
         documented default ordering (amount descending) and is fully backwards
@@ -742,7 +793,7 @@ class Store:
             "LEFT JOIN invoices i ON i.id = f.invoice_id"
         )
         clauses, params = self._finding_filters(
-            status, min_amount, invoice_id, entities, cost_centers
+            status, min_amount, invoice_id, entities, cost_centers, review_status
         )
         if clauses:
             query += " WHERE " + " AND ".join(clauses)
@@ -767,6 +818,7 @@ class Store:
         invoice_id: Optional[int] = None,
         entities: Optional[List[str]] = None,
         cost_centers: Optional[List[str]] = None,
+        review_status: Optional[str] = None,
     ) -> int:
         """Count findings matching the same filters as :meth:`list_findings`.
 
@@ -778,7 +830,7 @@ class Store:
             "LEFT JOIN invoices i ON i.id = f.invoice_id"
         )
         clauses, params = self._finding_filters(
-            status, min_amount, invoice_id, entities, cost_centers
+            status, min_amount, invoice_id, entities, cost_centers, review_status
         )
         if clauses:
             query += " WHERE " + " AND ".join(clauses)

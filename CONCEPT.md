@@ -44,7 +44,10 @@ Argument im Preistest und schneiden die Regelprofile anhand der teuersten
 Artikelgruppen und Gesellschaften zu. Im wiederkehrenden Quartalsreview nutzen
 sie die **ROI-Zeitreihe**, die neben dem vermiedenen Nutzen auch die **aktuelle
 Prüflast** (offene Findings und den daran gebundenen Aufwand) je Gesellschaft und
-Kostenstelle ausweist.
+Kostenstelle ausweist. Bei der Abarbeitung des Wochen-Digests und der
+Findings-Liste arbeiten sie zuerst die Rechnungen mit dem **größten offenen
+Prüfvolumen** ab (viele offene Findings bzw. hoher offener Betrag), weil dort pro
+Rechnung die meiste Arbeit gebündelt ist.
 
 ## Problem
 
@@ -116,6 +119,32 @@ persistentem Speicher.
     Struktur.
   - Ungültige Werte (unbekanntes `sort`, negatives oder nicht-ganzzahliges
     `limit`/`offset`) liefern `400` mit JSON-Fehlerkörper.
+- **Rechnungsbezogene Prüf-Last** (`GET /api/findings?review_status=`,
+  `GET /api/invoices`): Die zweite Priorisierungsachse neben `status` und Betrag
+  macht sichtbar, **welche Rechnung noch gar nicht durchgesehen ist** — eine
+  Rechnung mit 40 Positionen und 12 offenen Findings ist eine andere Aufgabe als
+  12 einzelne Rechnungen mit je einem Finding.
+  - `GET /api/findings` akzeptiert den optionalen Filter
+    `?review_status=open|reviewed|all` (Default `all`, rückwärtskompatibel).
+    `open` liefert die Findings von Rechnungen mit **mindestens einem Finding
+    ohne Feedback**, `reviewed` die Findings von Rechnungen, deren Findings
+    **alle** ein Feedback haben; `all` bzw. Weglassen filtert nicht.
+    `count`/`total_count` berücksichtigen denselben Filter. Unbekannte Werte
+    liefern `400` mit JSON-Fehlerkörper.
+  - `GET /api/invoices` liefert je Rechnung zusätzlich `finding_count`,
+    `open_finding_count`, `reviewed_finding_count`, `open_amount` und
+    `review_status` (`clean` ohne Findings, `open` bei mindestens einem Finding
+    ohne Feedback, sonst `reviewed`). Die Felder werden per `LEFT JOIN`/Aggregat
+    über `findings` berechnet — ohne N+1. Rechnung ohne Findings hat
+    `review_status == "clean"` und `open_amount == 0.0`. Die Summe von
+    `open_amount` je Gesellschaft entspricht dem `open_amount` aus
+    `GET /api/stats?entity=<Gesellschaft>`.
+  - Die Rechnungs-Sortierung wird um `open_amount_desc`/`open_amount_asc` und
+    `open_finding_count_desc`/`open_finding_count_asc` erweitert (jeweils mit
+    deterministischem Sekundärschlüssel `id`), damit die Liste direkt nach „was
+    muss ich noch anfassen“ sortierbar wird. Unbekannte Werte liefern `400`.
+  - Reine Lese-Erweiterung auf den bestehenden Tabellen: keine neuen Tabellen,
+    Spalten oder Laufzeit-Abhängigkeiten, keine Änderung an bestehenden Feldern.
 - **Web-Oberfläche mit Seitenumschaltung und Sortierung**
   (`src/radar/static/index.html`): Die Listen für Findings, Rechnungen und
   Lieferanten-Regeln bedienen die oben beschriebenen Endpoint-Parameter direkt,
@@ -123,8 +152,13 @@ persistentem Speicher.
   - Je Liste eine Sortier-Auswahl: Findings (`amount_desc` als Default,
     `amount_asc`, `created_at_desc`, `created_at_asc`), Rechnungen
     (`created_at_desc` als Default, `created_at_asc`, `invoice_number_asc`,
-    `invoice_number_desc`), Regeln (`supplier_asc` als Default, `supplier_desc`,
-    `updated_at_desc`, `updated_at_asc`).
+    `invoice_number_desc`, `open_amount_desc`/`open_amount_asc`,
+    `open_finding_count_desc`/`open_finding_count_asc`), Regeln (`supplier_asc`
+    als Default, `supplier_desc`, `updated_at_desc`, `updated_at_asc`).
+  - Die Findings-Sektion bietet zusätzlich eine Auswahl **„Prüfstatus“**
+    (`Alle`/`Offen`/`Durchgesehen`), die als `review_status` mitgesendet wird;
+    die Rechnungs-Sektion zeigt die Spalten „Findings offen“, „Offenes Volumen“
+    und „Status“ (`review_status`).
   - „Zurück“/„Weiter“-Buttons blättern mit fester Seitengröße (25) über
     `limit`/`offset`; die Kopfzeile zeigt „X–Y von Z“ aus `count` und
     `total_count`. „Weiter“ ist deaktiviert, sobald `offset + count >=
@@ -425,12 +459,21 @@ priorisiert die Freigabe-Entscheidung.
    Schreibweisen als eine Gruppe erscheinen) und **OCR-/PDF-Extraktion** (damit
    die Positions- und Artikelnamen nicht mehr aus strukturierten Exporten
    stammen müssen). Beide bauen auf der jetzigen Gruppenstruktur auf.
-8. **Kapazitäts-/Priorisierungssicht aus der offenen Last — nächster Schritt.**
+8. **Kapazitäts-/Priorisierungssicht aus der offenen Last.**
    Aufbauend auf `open`, `open_review_minutes` und `open_review_cost_eur` der
    ROI-Zeitreihe: eine Sicht, die Gesellschaften und Kostenstellen nach dem
    **gebundenen offenen Prüfaufwand** priorisiert und daraus eine Reihenfolge
-   „was zuerst abarbeiten“ ableitet — damit die Teams ihre Kapazität gezielt
-   dorthin lenken, wo die meiste offene Prüflast liegt.
+   „was zuerst abarbeiten“ ableitet. **Umgesetzt (erste Achse):** die
+   **rechnungsbezogene Prüf-Last** — `?review_status=open|reviewed|all` auf
+   `GET /api/findings`, die neuen Rechnungsfelder `finding_count`,
+   `open_finding_count`, `reviewed_finding_count`, `open_amount` und
+   `review_status` (`clean`/`open`/`reviewed`) auf `GET /api/invoices` sowie die
+   Sortierungen `open_amount_desc` und `open_finding_count_desc`, damit die
+   Liste direkt nach „was muss ich noch anfassen“ sortierbar ist. **Nächster
+   sinnvoller Schritt:** denselben `review_status`-Filter auch im
+   **Wochen-Digest** anbieten, damit der Digest nur noch die noch nicht
+   durchgesehenen Rechnungen ausweist — und darauf aufbauend die Priorisierung
+   ganzer Gesellschaften/Kostenstellen nach gebundenem offenem Prüfaufwand.
 
 ## Validation plan (Bezug zur Produkthypothese)
 
