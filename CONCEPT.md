@@ -106,6 +106,25 @@ persistentem Speicher.
     Struktur.
   - Ungültige Werte (unbekanntes `sort`, negatives oder nicht-ganzzahliges
     `limit`/`offset`) liefern `400` mit JSON-Fehlerkörper.
+- **Web-Oberfläche mit Seitenumschaltung und Sortierung**
+  (`src/radar/static/index.html`): Die Listen für Findings, Rechnungen und
+  Lieferanten-Regeln bedienen die oben beschriebenen Endpoint-Parameter direkt,
+  statt bei tausenden Einträgen alles auf einmal zu laden.
+  - Je Liste eine Sortier-Auswahl: Findings (`amount_desc` als Default,
+    `amount_asc`, `created_at_desc`, `created_at_asc`), Rechnungen
+    (`created_at_desc` als Default, `created_at_asc`, `invoice_number_asc`,
+    `invoice_number_desc`), Regeln (`supplier_asc` als Default, `supplier_desc`,
+    `updated_at_desc`, `updated_at_asc`).
+  - „Zurück“/„Weiter“-Buttons blättern mit fester Seitengröße (25) über
+    `limit`/`offset`; die Kopfzeile zeigt „X–Y von Z“ aus `count` und
+    `total_count`. „Weiter“ ist deaktiviert, sobald `offset + count >=
+    total_count`.
+  - Die Client-Anfragen setzen `limit`/`offset`/`sort` als Query-Parameter und
+    lesen `count`, `total_count`, `limit`, `offset` und `sort` aus der
+    JSON-Antwort; ohne Bedienung entsprechen sie den dokumentierten Defaults
+    der Endpoints.
+  - Bei `400` (z. B. manipulierter `sort`-Wert) erscheint eine sichtbare
+    Fehlermeldung, ohne die zuletzt geladene Ansicht zu zerstören.
 - **Nachvollziehbarkeit:** Audit-Ansicht pro Rechnung — was verglichen wurde und
   was abwich (Referenzwert, Ist-Wert, Betrag, Begründung).
 - **Manuelles Feedback** pro Treffer (bestätigt / Fehlalarm) inkl. Precision-
@@ -242,8 +261,11 @@ priorisiert die Freigabe-Entscheidung.
    (`supplier_asc`/`supplier_desc`/`updated_at_desc`/`updated_at_asc`) — jeweils
    mit `?limit=`, `?offset=`, `?sort=`, den Antwortfeldern `limit`, `offset`,
    `sort`, `count`, `total_count` und `400` bei ungültigen Werten.
-   Verbleibender Ausbauschritt: die Web-Oberfläche mit Seitenumschaltung und
-   Sortierung ausstatten.
+   **Umgesetzt:** die Web-Oberfläche bedient diese Parameter jetzt für alle
+   drei Listen (Sortier-Auswahl, „Zurück“/„Weiter“ mit fester Seitengröße,
+   Anzeige „X–Y von Z“ und sichtbare Fehlermeldung bei `400`). Verbleibender
+   nächster Ausbauschritt sind OCR-/PDF-Extraktion und das Fuzzy-Matching
+   uneinheitlicher Bezeichnungen (Punkte 1 und 2).
 
 ## Validation plan (Bezug zur Produkthypothese)
 

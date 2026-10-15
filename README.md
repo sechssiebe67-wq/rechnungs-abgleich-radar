@@ -150,6 +150,13 @@ Felder `invoices` bzw. `supplier_rules` behalten Name und Struktur. Ungültige
 Werte — unbekanntes `sort`, negatives oder nicht-ganzzahliges `limit`/`offset` —
 liefern `400` mit einem JSON-Fehlerkörper.
 
+Die Web-Oberfläche (`/`) bedient diese Parameter jetzt direkt: Für Findings,
+Rechnungen und Lieferanten-Regeln gibt es je eine Sortier-Auswahl, „Zurück“/
+„Weiter“-Buttons mit fester Seitengröße (25) und die Anzeige „X–Y von Z“ aus
+`count`/`total_count`; ohne Bedienung entsprechen die Anfragen den dokumentierten
+Defaults der Endpoints. Bei einem `400` (z. B. manipulierter `sort`-Wert) zeigt
+die Oberfläche eine sichtbare Fehlermeldung.
+
 ```sh
 # Zweite Seite à 10 Rechnungen, nach Rechnungsnummer aufsteigend
 curl -sS 'http://localhost:8080/api/invoices?limit=10&offset=10&sort=invoice_number_asc'
