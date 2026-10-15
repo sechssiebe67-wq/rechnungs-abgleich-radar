@@ -30,6 +30,7 @@
   .controls select, .controls input { background:#0d1117; color:#e6edf3; border:1px solid #30363d; border-radius:6px; padding:.3rem .5rem; font-size:.8rem; }
   .controls button:disabled { opacity:.45; cursor:not-allowed; }
   .error { color:#f85149; font-size:.8rem; }
+  tr.total-row td { border-top:2px solid #30363d; background:#0d1117; }
   footer { text-align:center; color:#8b949e; font-size:.8rem; padding:2rem; }
   a { color:#58a6ff; }
 </style>
@@ -196,7 +197,7 @@
     </div>
     <p class="muted" id="roi-timeseries-hint">Lade …</p>
     <table id="roi-timeseries-table" style="margin-top:.5rem">
-      <thead><tr><th>Monat</th><th>Gesellschaft</th><th>Kostenstelle</th><th class="amount">Findings</th><th class="amount">Bestätigt</th><th class="amount">Precision</th><th class="amount">Vermiedene Kosten (EUR)</th><th class="amount">Vermiedene Fehlzahlungen (EUR)</th></tr></thead>
+      <thead><tr><th>Monat</th><th>Gesellschaft</th><th>Kostenstelle</th><th class="amount">Findings</th><th class="amount">Bestätigt</th><th class="amount">Offen</th><th class="amount">Precision</th><th class="amount">Offener Aufwand (min)</th><th class="amount">Offener Aufwand (EUR)</th><th class="amount">Vermiedene Kosten (EUR)</th><th class="amount">Vermiedene Fehlzahlungen (EUR)</th></tr></thead>
       <tbody id="roi-timeseries"></tbody>
     </table>
   </section>
@@ -711,16 +712,34 @@ async function loadRoiTimeseries() {
     }
     document.getElementById('roi-timeseries-hint').textContent = '';
     table.style.display = '';
-    document.getElementById('roi-timeseries').innerHTML = buckets.map(b => `<tr>
+    const rows = buckets.map(b => `<tr>
       <td>${esc(b.month)}</td>
       <td>${esc(b.entity)}</td>
       <td>${esc(b.cost_center || '—')}</td>
       <td class="amount">${esc(b.findings)}</td>
       <td class="amount">${esc(b.confirmed)}</td>
+      <td class="amount">${esc(b.open)}</td>
       <td class="amount">${pct(b.precision)}</td>
+      <td class="amount">${esc(b.open_review_minutes)}</td>
+      <td class="amount">${money(b.open_review_cost_eur)}</td>
       <td class="amount">${money(b.avoided_review_cost_eur)}</td>
       <td class="amount">${money(b.confirmed_amount)}</td>
-    </tr>`).join('');
+    </tr>`);
+    const t = d.totals || {};
+    rows.push(`<tr class="total-row">
+      <td><strong>Summe</strong></td>
+      <td>—</td>
+      <td>—</td>
+      <td class="amount">${esc(t.findings)}</td>
+      <td class="amount">${esc(t.confirmed)}</td>
+      <td class="amount">${esc(t.open)}</td>
+      <td class="amount">${pct(t.precision)}</td>
+      <td class="amount">${esc(t.open_review_minutes)}</td>
+      <td class="amount">${money(t.open_review_cost_eur)}</td>
+      <td class="amount">${money(t.avoided_review_cost_eur)}</td>
+      <td class="amount">${money(t.confirmed_amount)}</td>
+    </tr>`);
+    document.getElementById('roi-timeseries').innerHTML = rows.join('');
   } catch (e) {
     document.getElementById('roi-timeseries-error').textContent = 'Fehler: ' + e.message;
   }

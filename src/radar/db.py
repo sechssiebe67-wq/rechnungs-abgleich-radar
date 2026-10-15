@@ -1311,6 +1311,15 @@ class Store:
         sums the amounts of confirmed findings and ``open_amount`` the amounts
         of still-open findings.
 
+        On top, each bucket exposes the currently bound review load:
+        ``open`` counts the still-open findings, ``reviewed = confirmed +
+        false_alarm`` the already graded ones, and the bound effort
+        ``open_review_minutes = open × minutes`` and
+        ``open_review_cost_eur = open_review_minutes / 60 × rate`` (rounded to
+        two decimals). ``totals`` carries the same fields and is the exact sum
+        over the returned buckets — including ``open``, ``reviewed``,
+        ``open_review_minutes`` and ``open_review_cost_eur``.
+
         The ``months`` window (default ``12``, must be ``>= 1``) keeps only the
         buckets within the newest ``months`` calendar months; the anchor is the
         newest month present in the filtered data, so the report stays
@@ -1389,6 +1398,8 @@ class Store:
             reviewed = confirmed + false_alarm
             precision = (confirmed / reviewed) if reviewed else None
             avoided_minutes = round(confirmed * minutes, 2)
+            open_count = int(row["open"])
+            open_minutes = round(open_count * minutes, 2)
             buckets.append(
                 {
                     "month": month,
@@ -1397,7 +1408,8 @@ class Store:
                     "findings": int(row["findings"]),
                     "confirmed": confirmed,
                     "false_alarm": false_alarm,
-                    "open": int(row["open"]),
+                    "reviewed": reviewed,
+                    "open": open_count,
                     "open_amount": round(float(row["open_amount"]), 2),
                     "precision": round(precision, 4)
                     if precision is not None
@@ -1405,6 +1417,8 @@ class Store:
                     "confirmed_amount": round(float(row["confirmed_amount"]), 2),
                     "avoided_review_minutes": avoided_minutes,
                     "avoided_review_cost_eur": round(avoided_minutes / 60 * rate, 2),
+                    "open_review_minutes": open_minutes,
+                    "open_review_cost_eur": round(open_minutes / 60 * rate, 2),
                 }
             )
         buckets.sort(
@@ -1425,6 +1439,7 @@ class Store:
             "findings": sum(entry["findings"] for entry in buckets),
             "confirmed": total_confirmed,
             "false_alarm": total_false_alarm,
+            "reviewed": reviewed_total,
             "open": sum(entry["open"] for entry in buckets),
             "open_amount": round(sum(entry["open_amount"] for entry in buckets), 2),
             "precision": round(total_precision, 4)
@@ -1435,6 +1450,12 @@ class Store:
             ),
             "avoided_review_minutes": total_minutes,
             "avoided_review_cost_eur": round(total_minutes / 60 * rate, 2),
+            "open_review_minutes": round(
+                sum(entry["open_review_minutes"] for entry in buckets), 2
+            ),
+            "open_review_cost_eur": round(
+                sum(entry["open_review_cost_eur"] for entry in buckets), 2
+            ),
         }
         return {
             "buckets": buckets,
