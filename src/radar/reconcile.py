@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from .config import Settings
+from .config import Settings, effective_rule, effective_settings
 from .db import Store
 from .models import (
     Finding,
@@ -35,25 +35,32 @@ def reconcile_invoice(store: Store, invoice_id: int, settings: Settings) -> List
         raise ValueError("unknown invoice: %s" % invoice_id)
 
     store.clear_findings(invoice_id)
-    finding_ids: List[int] = []
+
+    rule = store.get_supplier_rule(invoice.supplier)
+    invoice_settings = effective_settings(settings, rule)
+    min_amount = (
+        float(rule["min_amount_eur"])
+        if rule and rule.get("min_amount_eur") is not None
+        else 0.0
+    )
+
+    findings: List[Finding] = []
 
     po = store.get_purchase_order(invoice.po_number) if invoice.po_number else None
 
     if po is None:
-        finding_ids.append(
-            store.add_finding(
-                Finding(
-                    finding_type="missing_po",
-                    amount=invoice.total_amount,
-                    message=(
-                        "Keine Bestellung zu Rechnung %s gefunden; Betrag vor Freigabe prüfen."
-                        % invoice.invoice_number
-                    ),
-                    invoice_id=invoice_id,
-                    reference_kind="bestellung",
-                    reference_value=invoice.po_number or "",
-                    actual_value=invoice.invoice_number,
-                )
+        findings.append(
+            Finding(
+                finding_type="missing_po",
+                amount=invoice.total_amount,
+                message=(
+                    "Keine Bestellung zu Rechnung %s gefunden; Betrag vor Freigabe prüfen."
+                    % invoice.invoice_number
+                ),
+                invoice_id=invoice_id,
+                reference_kind="bestellung",
+                reference_value=invoice.po_number or "",
+                actual_value=invoice.invoice_number,
             )
         )
 
@@ -63,17 +70,23 @@ def reconcile_invoice(store: Store, invoice_id: int, settings: Settings) -> List
             po_items[normalize_text(item.article)] = item
 
     for row in store.invoice_items(invoice_id):
-        finding_ids.extend(
-            _reconcile_item(store, invoice, row, po_items, settings)
+        findings.extend(
+            _reconcile_item(store, invoice, row, po_items, invoice_settings)
         )
 
-    finding_ids.extend(_detect_duplicates(store, invoice, settings))
+    findings.extend(_detect_duplicates(store, invoice, invoice_settings))
+
+    finding_ids: List[int] = []
+    for finding in findings:
+        if float(finding.amount) < min_amount:
+            continue
+        finding_ids.append(store.add_finding(finding))
     store.mark_reconciled(invoice_id)
     return finding_ids
 
 
-def _reconcile_item(store, invoice, row, po_items, settings) -> List[int]:
-    ids: List[int] = []
+def _reconcile_item(store, invoice, row, po_items, settings) -> List[Finding]:
+    findings: List[Finding] = []
     article_norm = row["article_norm"]
     quantity = float(row["quantity"])
     unit_price = float(row["unit_price"])
@@ -104,27 +117,25 @@ def _reconcile_item(store, invoice, row, po_items, settings) -> List[int]:
             amount = (unit_price - reference_unit) * quantity
             if amount > 0.005:
                 finding_type = "price_drift" if drift else "price_deviation"
-                ids.append(
-                    store.add_finding(
-                        Finding(
-                            finding_type=finding_type,
-                            amount=round(amount, 2),
-                            message=(
-                                "%s: berechnet %.2f EUR statt %s %.2f EUR (+%.1f%%)."
-                                % (
-                                    row["article"],
-                                    unit_price,
-                                    reference_label,
-                                    reference_unit,
-                                    (unit_price - reference_unit) / reference_unit * 100.0,
-                                )
-                            ),
-                            invoice_id=invoice.invoice_id,
-                            invoice_item_id=row["id"],
-                            reference_kind=reference_kind,
-                            reference_value=str(reference_value),
-                            actual_value="%.2f" % unit_price,
-                        )
+                findings.append(
+                    Finding(
+                        finding_type=finding_type,
+                        amount=round(amount, 2),
+                        message=(
+                            "%s: berechnet %.2f EUR statt %s %.2f EUR (+%.1f%%)."
+                            % (
+                                row["article"],
+                                unit_price,
+                                reference_label,
+                                reference_unit,
+                                (unit_price - reference_unit) / reference_unit * 100.0,
+                            )
+                        ),
+                        invoice_id=invoice.invoice_id,
+                        invoice_item_id=row["id"],
+                        reference_kind=reference_kind,
+                        reference_value=str(reference_value),
+                        actual_value="%.2f" % unit_price,
                     )
                 )
 
@@ -132,32 +143,30 @@ def _reconcile_item(store, invoice, row, po_items, settings) -> List[int]:
         excess = quantity - float(po_item.quantity)
         amount = excess * unit_price
         if amount > 0.005:
-            ids.append(
-                store.add_finding(
-                    Finding(
-                        finding_type="quantity_deviation",
-                        amount=round(amount, 2),
-                        message=(
-                            "%s: %.2f berechnet, bestellt %.2f (+%.2f)."
-                            % (row["article"], quantity, po_item.quantity, excess)
-                        ),
-                        invoice_id=invoice.invoice_id,
-                        invoice_item_id=row["id"],
-                        reference_kind="menge",
-                        reference_value="%.2f" % float(po_item.quantity),
-                        actual_value="%.2f" % quantity,
-                    )
+            findings.append(
+                Finding(
+                    finding_type="quantity_deviation",
+                    amount=round(amount, 2),
+                    message=(
+                        "%s: %.2f berechnet, bestellt %.2f (+%.2f)."
+                        % (row["article"], quantity, po_item.quantity, excess)
+                    ),
+                    invoice_id=invoice.invoice_id,
+                    invoice_item_id=row["id"],
+                    reference_kind="menge",
+                    reference_value="%.2f" % float(po_item.quantity),
+                    actual_value="%.2f" % quantity,
                 )
             )
 
-    return ids
+    return findings
 
 
-def _detect_duplicates(store, invoice, settings) -> List[int]:
+def _detect_duplicates(store, invoice, settings) -> List[Finding]:
     """Flag the *newer* invoice of a suspected duplicate pair."""
-    ids: List[int] = []
+    findings: List[Finding] = []
     if invoice.invoice_id is None:
-        return ids
+        return findings
     my_number = normalize_document_number(invoice.invoice_number)
     my_total = round(invoice.total_amount, 2)
     for other in store.invoices_for_supplier(invoice.supplier):
@@ -184,21 +193,19 @@ def _detect_duplicates(store, invoice, settings) -> List[int]:
                         other["invoice_number"],
                     )
         if reason:
-            ids.append(
-                store.add_finding(
-                    Finding(
-                        finding_type="duplicate",
-                        amount=my_total,
-                        message="Duplikatverdacht gegen %s: %s." % (other["invoice_number"], reason),
-                        invoice_id=invoice.invoice_id,
-                        reference_kind="rechnung",
-                        reference_value=other["invoice_number"],
-                        actual_value=invoice.invoice_number,
-                    )
+            findings.append(
+                Finding(
+                    finding_type="duplicate",
+                    amount=my_total,
+                    message="Duplikatverdacht gegen %s: %s." % (other["invoice_number"], reason),
+                    invoice_id=invoice.invoice_id,
+                    reference_kind="rechnung",
+                    reference_value=other["invoice_number"],
+                    actual_value=invoice.invoice_number,
                 )
             )
             break
-    return ids
+    return findings
 
 
 def reconcile_all(store: Store, settings: Settings) -> dict:
@@ -213,11 +220,15 @@ def reconcile_all(store: Store, settings: Settings) -> dict:
     return {"invoices": total, "flagged": flagged}
 
 
-def invoice_audit(store: Store, invoice_id: int) -> Optional[dict]:
+def invoice_audit(
+    store: Store, invoice_id: int, settings: Optional[Settings] = None
+) -> Optional[dict]:
     """Return a traceability view: what was compared and what deviated."""
     invoice = store.get_invoice(invoice_id)
     if invoice is None:
         return None
+    effective = settings or Settings()
+    rule = store.get_supplier_rule(invoice.supplier)
     findings = store.list_findings(invoice_id=invoice_id)
     by_item: dict = {}
     for finding in findings:
@@ -269,5 +280,6 @@ def invoice_audit(store: Store, invoice_id: int) -> Optional[dict]:
         "items": items,
         "findings": findings,
         "unmatched_findings": by_item.get(None, []),
+        "applied_rule": effective_rule(effective, rule),
     }
 

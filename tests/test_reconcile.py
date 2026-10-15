@@ -140,6 +140,85 @@ class DuplicateTests(unittest.TestCase):
         self.assertIn("duplicate", types_of(store.list_findings(invoice_id=second)))
 
 
+class SupplierRuleReconcileTests(unittest.TestCase):
+    def test_global_tolerance_does_not_flag_borderline_price(self):
+        store, settings = seeded_store()
+        invoice_id = store.add_invoice(
+            make_invoice(
+                "RE-G1",
+                "ACME GmbH",
+                [dict(position=1, article="Schraube M8", quantity=100, unit_price=0.406)],
+                po_number="PO-77",
+            )
+        )
+        reconcile_invoice(store, invoice_id, settings)
+        self.assertEqual(store.list_findings(invoice_id=invoice_id), [])
+
+    def test_supplier_tolerance_override_creates_finding(self):
+        store, settings = seeded_store()
+        store.upsert_supplier_rule("ACME GmbH", tolerance_pct=1.0)
+        invoice_id = store.add_invoice(
+            make_invoice(
+                "RE-S1",
+                "ACME GmbH",
+                [dict(position=1, article="Schraube M8", quantity=100, unit_price=0.406)],
+                po_number="PO-77",
+            )
+        )
+        reconcile_invoice(store, invoice_id, settings)
+        findings = store.list_findings(invoice_id=invoice_id)
+        self.assertEqual(types_of(findings), ["price_deviation"])
+        self.assertAlmostEqual(findings[0]["amount"], 0.60, places=2)
+
+    def test_min_amount_suppresses_small_findings(self):
+        store, settings = seeded_store()
+        store.upsert_supplier_rule("ACME GmbH", min_amount_eur=5.0)
+        small = store.add_invoice(
+            make_invoice(
+                "RE-M1",
+                "ACME GmbH",
+                [dict(position=1, article="Schraube M8", quantity=100, unit_price=0.42)],
+                po_number="PO-77",
+            )
+        )
+        reconcile_invoice(store, small, settings)
+        self.assertEqual(store.list_findings(invoice_id=small), [])
+
+        large = store.add_invoice(
+            make_invoice(
+                "RE-M2",
+                "ACME GmbH",
+                [dict(position=1, article="Schraube M8", quantity=100, unit_price=0.47)],
+                po_number="PO-77",
+            )
+        )
+        reconcile_invoice(store, large, settings)
+        findings = store.list_findings(invoice_id=large)
+        self.assertEqual(types_of(findings), ["price_deviation"])
+        self.assertAlmostEqual(findings[0]["amount"], 7.0, places=2)
+
+    def test_audit_reports_applied_rule_source(self):
+        store, settings = seeded_store()
+        store.upsert_supplier_rule("ACME GmbH", tolerance_pct=1.0)
+        invoice_id = store.add_invoice(
+            make_invoice(
+                "RE-A1",
+                "ACME GmbH",
+                [dict(position=1, article="Schraube M8", quantity=100, unit_price=0.50)],
+                po_number="PO-77",
+            )
+        )
+        reconcile_invoice(store, invoice_id, settings)
+        audit = invoice_audit(store, invoice_id, settings)
+        self.assertEqual(
+            audit["applied_rule"]["tolerance_pct"], {"value": 1.0, "source": "supplier"}
+        )
+        self.assertEqual(
+            audit["applied_rule"]["duplicate_window_days"]["source"], "global"
+        )
+        self.assertEqual(audit["applied_rule"]["min_amount_eur"]["source"], "global")
+
+
 class AuditTests(unittest.TestCase):
     def test_audit_contains_comparison(self):
         store, settings = seeded_store()

@@ -66,6 +66,45 @@ def purchase_order_from_dict(data: dict) -> PurchaseOrder:
     )
 
 
+_RULE_PARSERS = {
+    "tolerance_pct": ("float", "tolerance_pct"),
+    "price_drift_pct": ("float", "price_drift_pct"),
+    "duplicate_window_days": ("int", "duplicate_window_days"),
+    "min_amount_eur": ("float", "min_amount_eur"),
+}
+
+
+def supplier_rule_from_dict(data: dict) -> dict:
+    """Validate and normalize a supplier rule payload.
+
+    Raises :class:`ValueError` with a human-readable message when a value is
+    out of range or not numeric.
+    """
+    if not isinstance(data, dict):
+        raise ValueError("supplier rule must be a JSON object")
+    supplier = str(data.get("supplier", "")).strip()
+    if not supplier:
+        raise ValueError("supplier is required")
+
+    rule: dict = {}
+    for field, (kind, label) in _RULE_PARSERS.items():
+        raw = data.get(field)
+        if raw is None or raw == "":
+            continue
+        try:
+            value = int(raw) if kind == "int" else float(raw)
+        except (TypeError, ValueError):
+            raise ValueError("%s must be a number" % label)
+        if field in ("tolerance_pct", "price_drift_pct") and not (0 <= value <= 100):
+            raise ValueError("%s must be between 0 and 100" % label)
+        if field == "duplicate_window_days" and value < 0:
+            raise ValueError("%s must be >= 0" % label)
+        if field == "min_amount_eur" and value < 0:
+            raise ValueError("%s must be >= 0" % label)
+        rule[field] = value
+    return {"supplier": supplier, **rule}
+
+
 def reference_price_from_dict(data: dict) -> ReferencePrice:
     return ReferencePrice(
         supplier=str(data.get("supplier", "")).strip(),

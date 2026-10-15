@@ -1,0 +1,4 @@
+[
+  {"supplier": "ACME GmbH", "tolerance_pct": 1.0},
+  {"supplier": "Beta AG", "min_amount_eur": 5.0}
+]
