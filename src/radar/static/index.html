@@ -93,7 +93,14 @@ async function api(path, options) {
   return data;
 }
 function money(v) { return new Intl.NumberFormat('de-DE', {minimumFractionDigits:2, maximumFractionDigits:2}).format(v) + ' EUR'; }
-function esc(s) { const d = document.createElement('div'); d.textContent = s == null ? '' : s; return d.innerHTML; }
+function esc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
 
 async function loadHealth() {
   try { const d = await api('/healthz'); document.getElementById('health').textContent = 'status: ' + d.status; }
