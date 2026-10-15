@@ -190,6 +190,36 @@ persistentem Speicher.
     `RADAR_DEFAULT_ENTITY` (Fallback `default`) zugeordnet.
   - Die Web-Oberfläche bietet eine Mehrfachauswahl „Gesellschaft“ und zeigt die
     ROI-Tabelle „Gesellschaften“.
+- **ROI-Zeitreihe je Gesellschaft und Kostenstelle** (`GET /api/stats/roi/timeseries`):
+  Gruppen- und Holding-Controller, die einen Quartalsreview vorbereiten, können
+  den vermiedenen Prüfaufwand und die vermiedenen Fehlzahlungen **über die Zeit**
+  und **je Kostenstelle** ausweisen — sie sehen, ob der Nutzen des Radars
+  wächst, stagniert oder sinkt und welche Kostenstelle ihn treibt.
+  - Jede Rechnung trägt dazu eine optionale **Kostenstelle** (`cost_center`, Default
+    `""`). Neue Rechnungen ohne explizite Kostenstelle erhalten
+    `RADAR_DEFAULT_COST_CENTER` (Fallback leer); der Wert ist über JSON- und
+    CSV-Import setzbar und in der Audit-Ansicht `GET /api/invoices/:id` sichtbar.
+  - Die SQLite-Migration ergänzt die Spalte `invoices.cost_center`
+    rückwärtskompatibel (idempotent, Bestandsrechnungen erhalten `""`) und hält den
+    Index `(entity, cost_center)` vor.
+  - `GET /api/cost-centers` liefert die vorkommenden, nicht-leeren Kostenstellen
+    sortiert und dedupliziert.
+  - Die Zeitreihe gruppiert Findings je Kalendermonat (aus `invoices.invoice_date`,
+    Fallback `invoices.created_at`), je Gesellschaft und je Kostenstelle und
+    berechnet je Bucket **dieselben Formeln** wie `/api/stats/roi`:
+    `avoided_review_minutes = confirmed × review_minutes`,
+    `avoided_review_cost_eur = minutes / 60 × hourly_rate`, dazu `confirmed_amount`
+    (vermiedene Fehlzahlungen) und `open_amount`. Buckets sind nach `month`,
+    `entity`, `cost_center` aufsteigend sortiert; `totals` ist die exakte Summe
+    über die Buckets (Precision neu aus den aggregierten Zählern, nicht
+    gemittelt), `parameters` weist die wirksamen Annahmen und Filter aus.
+  - `?months=` (positive Ganzzahl, Default `12`, ungültig → `400`) begrenzt das
+    Fenster, `?entity=` und `?cost_center=` filtern mehrfach. Unbekannte
+    Filterwerte sind keine Fehlbedienung und liefern leere Buckets.
+  - Die Web-Oberfläche zeigt die Sektion „ROI-Zeitreihe“ mit Zeitraum-Selektor,
+    Gesellschafts- und Kostenstellen-Mehrfachauswahl und der Tabelle je Monat;
+    ohne Daten erscheint ein Hinweis, bei `400` eine sichtbare Fehlermeldung
+    ohne Verlust der zuletzt geladenen Ansicht.
 - **Wöchentlicher Digest** als E-Mail-fähiger HTML-Report und als JSON.
   - Der Digest berücksichtigt die gewählten Gesellschaften (`?entity=` bzw.
     `{"entities": [...]}` beim Versand), weist den Gesamtbetrag konsolidiert und
@@ -247,9 +277,13 @@ priorisiert die Freigabe-Entscheidung.
    Lieferant ausweist, welche Artikel und Positionen den Aufwand und die
    vermiedenen Zahlungen treiben — sortiert nach vermiedenen Kosten und über
    `?article_limit=` begrenzbar. **Umgesetzt:** der **Rollup über mehrere
-   Gesellschaften** über den Block `entities` und `?entity=` (mehrfach). Die
-   verbleibende Produktrichtung sind OCR-/PDF-Extraktion und das
-   Fuzzy-Matching uneinheitlicher Bezeichnungen (Punkte 1 und 2).
+   Gesellschaften** über den Block `entities` und `?entity=` (mehrfach) sowie
+   die **ROI-Zeitreihe je Monat, Gesellschaft und Kostenstelle**
+   (`GET /api/stats/roi/timeseries`, `GET /api/cost-centers`, optionales
+   Rechnungsfeld `cost_center`, `RADAR_DEFAULT_COST_CENTER`) für das
+   wiederkehrende Benefit-Reporting im Quartalsreview. Die verbleibende
+   Produktrichtung sind OCR-/PDF-Extraktion und das Fuzzy-Matching
+   uneinheitlicher Bezeichnungen (Punkte 1 und 2).
 6. **Begrenzte, seitenweise Ergebnislisten — umgesetzt.** `GET /api/findings`
    akzeptiert `?limit=`/`?offset=` sowie `?sort=` (Whitelist `amount_desc`,
    `amount_asc`, `created_at_desc`, `created_at_asc`) und liefert `limit`,
@@ -284,8 +318,13 @@ welche wiederkehrenden Artikelgruppen und Gesellschaften den Nutzen treiben und
 wo sich ein Regelprofil gezielt zuschneiden lässt. Die **Auswertung je
 Gesellschaft** (`entities`-Block, `?entity=`-Filter) erlaubt es Gruppen- und
 Holding-Kreditorenbuchhaltungen, den konsolidierten Konzernnutzen und den
-Beitrag jeder Gesellschaft getrennt zu belegen. Die Feedback- und
-Digest-Funktionen dieses Inkrements liefern dafür die Messgrößen.
+Beitrag jeder Gesellschaft getrennt zu belegen. Die **ROI-Zeitreihe**
+(`GET /api/stats/roi/timeseries`) unterstützt das **wiederkehrende
+Benefit-Reporting**: Sie zeigt die vermiedenen Kosten und Fehlzahlungen je Monat,
+Gesellschaft und Kostenstelle und macht so im wiederholten Quartalsreview
+nachweisbar, ob der Nutzen wächst, flach bleibt oder schrumpft und welche
+Kostenstelle dafür verantwortlich ist. Die Feedback- und Digest-Funktionen
+dieses Inkrements liefern dafür die Messgrößen.
 
 Der **Digest-Versand** unterstützt den Concierge-Test direkt: Der Wochen-Digest
 wird den Testkunden per Webhook/SMTP aktiv zugestellt (statt manuellem Abruf),

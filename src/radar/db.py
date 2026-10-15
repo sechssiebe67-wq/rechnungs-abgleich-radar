@@ -90,6 +90,7 @@ CREATE TABLE IF NOT EXISTS invoices (
     po_number TEXT,
     total_amount REAL NOT NULL DEFAULT 0,
     entity TEXT NOT NULL DEFAULT 'default',
+    cost_center TEXT NOT NULL DEFAULT '',
     reconciled_at TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -193,6 +194,13 @@ def _impact_period(row: sqlite3.Row, prefix: str) -> dict:
     }
 
 
+def _shift_month(month: str, delta: int) -> str:
+    """Shift a ``YYYY-MM`` string by ``delta`` calendar months."""
+    year, mon = int(month[:4]), int(month[5:7])
+    index = year * 12 + (mon - 1) + delta
+    return "%04d-%02d" % (index // 12, index % 12 + 1)
+
+
 class Store:
     def __init__(self, db_path: str = "radar.db") -> None:
         self.db_path = db_path
@@ -218,9 +226,10 @@ class Store:
         """Bring an existing database up to the current schema.
 
         SQLite cannot add a column via ``CREATE TABLE IF NOT EXISTS``, so legacy
-        databases that predate the multi-entity rollup are upgraded in place.
-        The check is idempotent and never drops data; existing invoices receive
-        the ``default`` entity.
+        databases that predate the multi-entity rollup or the cost-center view
+        are upgraded in place. The checks are idempotent and never drop data;
+        existing invoices receive the ``default`` entity and an empty cost
+        center.
         """
         columns = {
             row["name"] for row in conn.execute("PRAGMA table_info(invoices)").fetchall()
@@ -229,9 +238,17 @@ class Store:
             conn.execute(
                 "ALTER TABLE invoices ADD COLUMN entity TEXT NOT NULL DEFAULT 'default'"
             )
+        if "cost_center" not in columns:
+            conn.execute(
+                "ALTER TABLE invoices ADD COLUMN cost_center TEXT NOT NULL DEFAULT ''"
+            )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_invoices_entity "
             "ON invoices (entity, supplier)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_invoices_cost_center "
+            "ON invoices (entity, cost_center)"
         )
 
     # -- reference data ---------------------------------------------------
@@ -468,11 +485,12 @@ class Store:
         self.upsert_supplier(invoice.supplier)
         with self.connect() as conn:
             entity = (invoice.entity or "default").strip() or "default"
+            cost_center = (invoice.cost_center or "").strip()
             cursor = conn.execute(
                 """INSERT INTO invoices
                    (invoice_number, invoice_norm, supplier, invoice_date, po_number,
-                    total_amount, entity)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    total_amount, entity, cost_center)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     invoice.invoice_number.strip(),
                     normalize_document_number(invoice.invoice_number),
@@ -481,6 +499,7 @@ class Store:
                     invoice.po_number.strip() if invoice.po_number else None,
                     invoice.total_amount,
                     entity,
+                    cost_center,
                 ),
             )
             invoice_id = int(cursor.lastrowid)
@@ -518,6 +537,7 @@ class Store:
             invoice_date=parse_date(row["invoice_date"]),
             po_number=row["po_number"],
             entity=row["entity"] or "default",
+            cost_center=row["cost_center"] or "",
             items=[
                 InvoiceItem(
                     position=r["position"],
@@ -588,6 +608,16 @@ class Store:
                    ORDER BY entity"""
             ).fetchall()
         return [row["entity"] for row in rows]
+
+    def list_cost_centers(self) -> List[str]:
+        """Return the distinct, sorted non-empty cost centers of invoices."""
+        with self.connect() as conn:
+            rows = conn.execute(
+                """SELECT DISTINCT cost_center FROM invoices
+                   WHERE cost_center IS NOT NULL AND cost_center <> ''
+                   ORDER BY cost_center"""
+            ).fetchall()
+        return [row["cost_center"] for row in rows]
 
     def invoice_items(self, invoice_id: int) -> List[dict]:
         with self.connect() as conn:
@@ -1132,6 +1162,163 @@ class Store:
                 "review_minutes_per_finding": minutes,
                 "hourly_rate_eur": rate,
                 "article_limit": limit,
+            },
+        }
+
+    def roi_timeseries(
+        self,
+        settings: Optional[Settings] = None,
+        months: Optional[int] = None,
+        entities: Optional[List[str]] = None,
+        cost_centers: Optional[List[str]] = None,
+        review_minutes: Optional[float] = None,
+        hourly_rate: Optional[float] = None,
+    ) -> dict:
+        """Time-bucketed, cost-center-aware ROI report.
+
+        Findings are grouped by calendar month (derived from
+        ``invoices.invoice_date``, falling back to ``invoices.created_at`` for
+        invoices without a date), by ``invoices.entity`` and by
+        ``invoices.cost_center``. Each bucket uses exactly the same formulas as
+        :meth:`roi_report`: ``avoided_review_minutes = confirmed × minutes`` and
+        ``avoided_review_cost_eur = minutes / 60 × rate``; ``confirmed_amount``
+        sums the amounts of confirmed findings and ``open_amount`` the amounts
+        of still-open findings.
+
+        The ``months`` window (default ``12``, must be ``>= 1``) keeps only the
+        buckets within the newest ``months`` calendar months; the anchor is the
+        newest month present in the filtered data, so the report stays
+        deterministic even when the data lies in the past. ``entities`` and
+        ``cost_centers`` restrict the view; unknown values are not an error and
+        simply yield an empty ``buckets`` list with zeroed totals.
+
+        Returns ``buckets`` sorted by ``month`` ascending, then ``entity``, then
+        ``cost_center``; ``totals`` is the exact sum over the returned buckets
+        with the precision recomputed from the aggregated counts (never
+        averaged); ``parameters`` echoes the effective assumptions and filters.
+        """
+        base = settings or Settings()
+        minutes = base.review_minutes_per_finding if review_minutes is None else float(
+            review_minutes
+        )
+        rate = (
+            base.review_hourly_rate_eur if hourly_rate is None else float(hourly_rate)
+        )
+        if minutes < 0:
+            raise ValueError("review_minutes must be >= 0")
+        if rate < 0:
+            raise ValueError("hourly_rate must be >= 0")
+        window = 12 if months is None else int(months)
+        if window < 1:
+            raise ValueError("months must be >= 1")
+
+        clauses: List[str] = []
+        params: List[object] = []
+        if entities:
+            placeholders = ", ".join("?" for _ in entities)
+            clauses.append("i.entity IN (%s)" % placeholders)
+            params.extend(entities)
+        if cost_centers:
+            placeholders = ", ".join("?" for _ in cost_centers)
+            clauses.append("i.cost_center IN (%s)" % placeholders)
+            params.extend(cost_centers)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+
+        with self.connect() as conn:
+            rows = conn.execute(
+                """SELECT substr(COALESCE(i.invoice_date, i.created_at), 1, 7) AS month,
+                          i.entity AS entity,
+                          COALESCE(i.cost_center, '') AS cost_center,
+                          COUNT(f.id) AS findings,
+                          COALESCE(SUM(CASE WHEN f.feedback = 'confirmed'
+                                            THEN 1 ELSE 0 END), 0) AS confirmed,
+                          COALESCE(SUM(CASE WHEN f.feedback = 'false_alarm'
+                                            THEN 1 ELSE 0 END), 0) AS false_alarm,
+                          COALESCE(SUM(CASE WHEN f.status = 'open'
+                                            THEN 1 ELSE 0 END), 0) AS open,
+                          COALESCE(SUM(CASE WHEN f.status = 'open'
+                                            THEN f.amount ELSE 0 END), 0) AS open_amount,
+                          COALESCE(SUM(CASE WHEN f.feedback = 'confirmed'
+                                            THEN f.amount ELSE 0 END), 0) AS confirmed_amount
+                   FROM findings f
+                   JOIN invoices i ON i.id = f.invoice_id
+                   %s
+                   GROUP BY month, i.entity, i.cost_center"""
+                % where,
+                params,
+            ).fetchall()
+
+        months_present = [row["month"] for row in rows if row["month"]]
+        cutoff = None
+        if months_present:
+            cutoff = _shift_month(max(months_present), -(window - 1))
+
+        buckets: List[dict] = []
+        for row in rows:
+            month = row["month"]
+            if cutoff is not None and month < cutoff:
+                continue
+            confirmed = int(row["confirmed"])
+            false_alarm = int(row["false_alarm"])
+            reviewed = confirmed + false_alarm
+            precision = (confirmed / reviewed) if reviewed else None
+            avoided_minutes = round(confirmed * minutes, 2)
+            buckets.append(
+                {
+                    "month": month,
+                    "entity": row["entity"] or "default",
+                    "cost_center": row["cost_center"] or "",
+                    "findings": int(row["findings"]),
+                    "confirmed": confirmed,
+                    "false_alarm": false_alarm,
+                    "open": int(row["open"]),
+                    "open_amount": round(float(row["open_amount"]), 2),
+                    "precision": round(precision, 4)
+                    if precision is not None
+                    else None,
+                    "confirmed_amount": round(float(row["confirmed_amount"]), 2),
+                    "avoided_review_minutes": avoided_minutes,
+                    "avoided_review_cost_eur": round(avoided_minutes / 60 * rate, 2),
+                }
+            )
+        buckets.sort(
+            key=lambda entry: (entry["month"], entry["entity"], entry["cost_center"])
+        )
+
+        total_confirmed = sum(entry["confirmed"] for entry in buckets)
+        total_false_alarm = sum(entry["false_alarm"] for entry in buckets)
+        reviewed_total = total_confirmed + total_false_alarm
+        total_precision = (
+            (total_confirmed / reviewed_total) if reviewed_total else None
+        )
+        total_minutes = round(
+            sum(entry["avoided_review_minutes"] for entry in buckets), 2
+        )
+        totals = {
+            "buckets": len(buckets),
+            "findings": sum(entry["findings"] for entry in buckets),
+            "confirmed": total_confirmed,
+            "false_alarm": total_false_alarm,
+            "open": sum(entry["open"] for entry in buckets),
+            "open_amount": round(sum(entry["open_amount"] for entry in buckets), 2),
+            "precision": round(total_precision, 4)
+            if total_precision is not None
+            else None,
+            "confirmed_amount": round(
+                sum(entry["confirmed_amount"] for entry in buckets), 2
+            ),
+            "avoided_review_minutes": total_minutes,
+            "avoided_review_cost_eur": round(total_minutes / 60 * rate, 2),
+        }
+        return {
+            "buckets": buckets,
+            "totals": totals,
+            "parameters": {
+                "months": window,
+                "review_minutes_per_finding": minutes,
+                "hourly_rate_eur": rate,
+                "entities": list(entities) if entities else [],
+                "cost_centers": list(cost_centers) if cost_centers else [],
             },
         }
 

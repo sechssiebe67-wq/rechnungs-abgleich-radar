@@ -275,6 +275,8 @@ def invoice_audit(
             "supplier": invoice.supplier,
             "invoice_date": invoice.invoice_date.isoformat() if invoice.invoice_date else None,
             "po_number": invoice.po_number,
+            "entity": invoice.entity,
+            "cost_center": invoice.cost_center,
             "total_amount": round(invoice.total_amount, 2),
         },
         "items": items,

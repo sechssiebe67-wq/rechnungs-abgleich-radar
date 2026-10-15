@@ -65,6 +65,9 @@ class Invoice:
     # Legal entity (Gesellschaft) the invoice belongs to; used for the
     # multi-entity rollup. ``"default"`` keeps single-entity data working.
     entity: str = "default"
+    # Optional cost center (Kostenstelle) the invoice is booked to; used for
+    # the cost-center-aware ROI time series. Empty means "no cost center".
+    cost_center: str = ""
 
     @property
     def total_amount(self) -> float:

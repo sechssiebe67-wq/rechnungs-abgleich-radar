@@ -36,6 +36,7 @@ Umgebungsvariablen:
 | `RADAR_PRICE_DRIFT_PCT` | `2` | Schwelle für Preisdrift über akzeptierte Preise |
 | `RADAR_DUPLICATE_WINDOW_DAYS` | `45` | Zeitfenster für Duplikatverdacht |
 | `RADAR_DEFAULT_ENTITY` | `default` | Gesellschaft, der neue Rechnungen ohne `entity`-Feld zugeordnet werden |
+| `RADAR_DEFAULT_COST_CENTER` | leer | Kostenstelle, die neuen Rechnungen ohne `cost_center`-Feld zugeordnet wird (leer = keine Kostenstelle) |
 | `RADAR_REVIEW_MINUTES_PER_FINDING` | `4.0` | Angenommene Prüfzeit pro bestätigtem Finding in Minuten (≥ 0) — Basis des ROI-Nachweises |
 | `RADAR_REVIEW_HOURLY_RATE_EUR` | `45.0` | Angenommener Stundensatz in EUR (≥ 0) zur Bewertung des vermiedenen Prüfaufwands |
 | `RADAR_API_TOKEN` | leer | Wenn gesetzt, ist die API per `Authorization: Bearer …` geschützt (`/healthz` bleibt offen) |
@@ -65,7 +66,9 @@ python3 -m unittest discover -s tests -v
 | `GET /api/stats/by-supplier` | Precision, Findings und offenes Volumen je Lieferant inkl. angewendeter Regeln (`?entity=`) |
 | `GET /api/stats/rule-impact` | Vorher/Nachher-Vergleich der Findings und Precision je Lieferant vor/nach dem letzten Regel-Update (`?entity=`) |
 | `GET /api/stats/roi` | ROI-Nachweis: vermiedener Prüfaufwand und vermiedene Fehlzahlungen aus dem Feedback, je Lieferant, je Gesellschaft, je Artikel und gesamt (`?review_minutes=`, `?hourly_rate=`, `?article_limit=`, `?entity=`) |
+| `GET /api/stats/roi/timeseries` | ROI-Zeitreihe je `(Monat, Gesellschaft, Kostenstelle)` mit denselben Kennzahlen wie `/api/stats/roi`, plus `totals` und `parameters` (`?months=`, `?entity=`, `?cost_center=`, `?review_minutes=`, `?hourly_rate=`) |
 | `GET /api/entities` | Sortierte Liste der in Rechnungen vorkommenden Gesellschaften |
+| `GET /api/cost-centers` | Sortierte, deduplizierte Liste der nicht-leeren Kostenstellen in Rechnungen |
 | `POST /api/suppliers` | Lieferant anlegen |
 | `GET /api/supplier-rules` | Liste aller Lieferanten-Regeln; optional seitenweise (`?limit=`, `?offset=`) und sortiert (`?sort=`) |
 | `GET /api/supplier-rules/:supplier` | Einzelne Regel oder `404` |
@@ -172,12 +175,14 @@ curl -sS 'http://localhost:8080/api/supplier-rules'
 ### CSV-Format für Rechnungsimport
 
 ```csv
-invoice_number,supplier,invoice_date,position,article,quantity,unit_price,po_number,entity
-RE-1001,ACME GmbH,2026-01-15,1,Schraube M8,100,0.42,PO-77,DE01
+invoice_number,supplier,invoice_date,position,article,quantity,unit_price,po_number,entity,cost_center
+RE-1001,ACME GmbH,2026-01-15,1,Schraube M8,100,0.42,PO-77,DE01,KST-100
 ```
 
-Die Spalte `entity` ist optional; fehlt sie (oder bleibt ein Wert leer), wird
-`RADAR_DEFAULT_ENTITY` verwendet. Beispieldaten liegen unter
+Die Spalten `entity` und `cost_center` sind optional; fehlen sie (oder bleibt ein
+Wert leer), werden `RADAR_DEFAULT_ENTITY` bzw. `RADAR_DEFAULT_COST_CENTER`
+verwendet (Fallback `default` bzw. leer). Beim JSON-Import (`POST /api/invoices`)
+verhält sich das Feld `cost_center` identisch. Beispieldaten liegen unter
 [`examples/`](examples/).
 
 ### Lieferanten-Regeln
@@ -395,6 +400,110 @@ vermiedener Betrag, vermiedene Kosten); solange kein Feedback bzw. kein
 bestätigtes Finding vorliegt, erscheint dort ein Hinweis statt einer leeren
 Tabelle.
 
+### Kostenstellen und ROI-Zeitreihe
+
+Gruppen- und Holding-Kreditorenbuchhaltungen müssen den vermiedenen
+Prüfaufwand und die vermiedenen Fehlzahlungen **über die Zeit** und **je
+Kostenstelle** ausweisen, um in einem Quartalsreview zu zeigen, ob der Nutzen
+des Radars wächst, stagniert oder sinkt — und welche Kostenstelle ihn treibt.
+
+Jede Rechnung kann dazu eine optionale **Kostenstelle** (`cost_center`) tragen.
+Sie ist standardmäßig `""` (keine Kostenstelle), wird per JSON-Import
+(`POST /api/invoices`) und CSV-Import (`POST /api/invoices/import`) gesetzt und
+ist im Audit `GET /api/invoices/:id` sichtbar. Fehlt der Wert, greift
+`RADAR_DEFAULT_COST_CENTER` (Fallback leer). `GET /api/cost-centers` liefert die
+in Rechnungen vorkommenden Kostenstellen sortiert und ohne leere Einträge.
+
+`GET /api/stats/roi/timeseries` liefert je Kalendermonat (aus
+`invoices.invoice_date`, Fallback `invoices.created_at`), je Gesellschaft und je
+Kostenstelle einen Bucket mit exakt denselben Kennzahlen wie `/api/stats/roi`:
+
+| Feld | Bedeutung |
+| --- | --- |
+| `month` | Kalendermonat `YYYY-MM` |
+| `entity` | Gesellschaft (`default`, wenn keine gesetzt) |
+| `cost_center` | Kostenstelle (`""`, wenn keine gesetzt) |
+| `findings` | Anzahl Findings im Bucket |
+| `confirmed` | bestätigte Findings |
+| `false_alarm` | Fehlalarme |
+| `open` | offene Findings |
+| `open_amount` | Summe der Beträge offener Findings (EUR) |
+| `precision` | `confirmed / (confirmed + false_alarm)`, `null` ohne Feedback |
+| `confirmed_amount` | Summe der Beträge bestätigter Findings (vermiedene Fehlzahlungen, EUR) |
+| `avoided_review_minutes` | `confirmed × review_minutes_per_finding` |
+| `avoided_review_cost_eur` | `avoided_review_minutes / 60 × hourly_rate` |
+
+Buckets sind nach `month`, dann `entity`, dann `cost_center` aufsteigend
+sortiert. `totals` ist die exakte Summe über die zurückgegebenen Buckets; die
+Precision in `totals` wird aus den aggregierten Zählern neu berechnet (nicht
+gemittelt). `parameters` weist die wirksamen Annahmen (`months`,
+`review_minutes_per_finding`, `hourly_rate_eur`) sowie die angewendeten Filter
+(`entities`, `cost_centers`) aus.
+
+| Parameter | Bedeutung | Validierung |
+| --- | --- | --- |
+| `months` | Zeitfenster in Monaten (Anker: neuester Monat der Daten) | positive Ganzzahl, Default `12`, sonst `400` |
+| `entity` | Gesellschafts-Filter, mehrfach angebbar | unbekannte Werte liefern leere Buckets |
+| `cost_center` | Kostenstellen-Filter, mehrfach angebbar | unbekannte Werte liefern leere Buckets |
+| `review_minutes` | Annahme Minuten pro bestätigtem Finding | nicht-negative Zahl, sonst `400` |
+| `hourly_rate` | Annahme Stundensatz in EUR | nicht-negative Zahl, sonst `400` |
+
+```sh
+# ROI-Zeitreihe der letzten 12 Monate, nur DE01 und Kostenstelle KST-100
+curl -sS 'http://localhost:8080/api/stats/roi/timeseries?months=12&entity=DE01&cost_center=KST-100'
+
+# Verfügbare Kostenstellen
+curl -sS http://localhost:8080/api/cost-centers
+```
+
+```json
+{
+  "buckets": [
+    {
+      "month": "2026-01",
+      "entity": "DE01",
+      "cost_center": "KST-100",
+      "findings": 3,
+      "confirmed": 2,
+      "false_alarm": 1,
+      "open": 0,
+      "open_amount": 0.0,
+      "precision": 0.6667,
+      "confirmed_amount": 84.0,
+      "avoided_review_minutes": 8.0,
+      "avoided_review_cost_eur": 6.0
+    }
+  ],
+  "totals": {
+    "buckets": 1,
+    "findings": 3,
+    "confirmed": 2,
+    "false_alarm": 1,
+    "open": 0,
+    "open_amount": 0.0,
+    "precision": 0.6667,
+    "confirmed_amount": 84.0,
+    "avoided_review_minutes": 8.0,
+    "avoided_review_cost_eur": 6.0
+  },
+  "parameters": {
+    "months": 12,
+    "review_minutes_per_finding": 4.0,
+    "hourly_rate_eur": 45.0,
+    "entities": ["DE01"],
+    "cost_centers": ["KST-100"]
+  }
+}
+```
+
+Die Web-Oberfläche zeigt die Sektion „ROI-Zeitreihe“ mit einem
+Zeitraum-Selektor (3/6/12/24 Monate), der bestehenden Gesellschafts- und einer
+neuen Kostenstellen-Mehrfachauswahl sowie der Tabelle `Monat`, `Gesellschaft`,
+`Kostenstelle`, `Findings`, `bestätigt`, `Precision`, `vermiedene Kosten (EUR)`,
+`vermiedene Fehlzahlungen (EUR)`. Ohne Daten erscheint ein Hinweis statt einer
+leeren Tabelle; bei `400` wird eine sichtbare Fehlermeldung angezeigt, ohne die
+zuletzt geladene Ansicht zu verwerfen.
+
 ## Wöchentlicher Digest
 
 Der Wochen-Digest ist als JSON/HTML abrufbar und kann zusätzlich **aktiv
@@ -459,7 +568,8 @@ beendet.
   einem vorhandenen Secret über `digest.smtp.existingSecret` +
   `digest.smtp.passwordKey`. Die Vorgabe-Gesellschaft für Rechnungen ohne
   `entity` wird über `config.defaultEntity` (Env `RADAR_DEFAULT_ENTITY`)
-  durchgereicht.
+  durchgereicht; die Vorgabe-Kostenstelle für Rechnungen ohne `cost_center` über
+  `config.defaultCostCenter` (Env `RADAR_DEFAULT_COST_CENTER`, Default leer).
 
 ```sh
 helm template radar deploy/helm/rechnungs-abgleich-radar \
