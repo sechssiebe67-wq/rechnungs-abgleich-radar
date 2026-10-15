@@ -131,6 +131,14 @@ SUPPLIER_RULE_FIELDS = (
     "min_amount_eur",
 )
 
+# Cap for the ROI report's article breakdown. Keeps the response bounded when a
+# customer reconciles thousands of distinct articles.
+DEFAULT_ARTICLE_LIMIT = 50
+
+# Display label for findings that are not tied to a single invoice position
+# (e.g. ``missing_po`` or ``duplicate``); they still count towards the report.
+NO_POSITION_LABEL = "(ohne Position)"
+
 
 def _impact_period(row: sqlite3.Row, prefix: str) -> dict:
     """Shape one before/after aggregate row into a report period."""
@@ -612,6 +620,7 @@ class Store:
         settings: Optional[Settings] = None,
         review_minutes: Optional[float] = None,
         hourly_rate: Optional[float] = None,
+        article_limit: Optional[int] = None,
     ) -> dict:
         """Turn accumulated feedback into a defensible ROI number.
 
@@ -621,7 +630,18 @@ class Store:
         :meth:`stats_by_supplier`. On top it converts the confirmed hits into
         avoided review effort: ``confirmed × review_minutes`` minutes and, in
         aggregate, the corresponding cost in euro. All figures come from
-        ``findings``, ``invoices`` and ``suppliers`` — no new tables.
+        ``findings``, ``invoices``, ``invoice_items`` and ``suppliers`` — no new
+        tables.
+
+        ``articles`` is an *additional* view that groups the same findings by
+        (supplier, article) using :func:`normalize_text`, so recurring, costly
+        article groups become visible. Each entry uses the same parameters and
+        formula as the supplier block; findings without an invoice position
+        (e.g. ``missing_po``/``duplicate``) are grouped under
+        :data:`NO_POSITION_LABEL`. The list is sorted by avoided cost
+        (descending), then confirmed amount, and capped to ``article_limit``
+        entries (default :data:`DEFAULT_ARTICLE_LIMIT`, ``>= 0``). The article
+        view never changes ``suppliers`` or ``totals``.
 
         ``review_minutes`` and ``hourly_rate`` default to the values from
         ``settings`` and may be overridden per call for what-if analyses.
@@ -637,6 +657,11 @@ class Store:
             raise ValueError("review_minutes must be >= 0")
         if rate < 0:
             raise ValueError("hourly_rate must be >= 0")
+        limit = (
+            DEFAULT_ARTICLE_LIMIT if article_limit is None else int(article_limit)
+        )
+        if limit < 0:
+            raise ValueError("article_limit must be >= 0")
 
         with self.connect() as conn:
             rows = conn.execute(
@@ -656,6 +681,26 @@ class Store:
                    LEFT JOIN invoices i ON i.supplier = s.name
                    LEFT JOIN findings f ON f.invoice_id = i.id
                    GROUP BY s.name"""
+            ).fetchall()
+            article_rows = conn.execute(
+                """SELECT i.supplier AS supplier,
+                          COALESCE(ii.article_norm, '') AS article_norm,
+                          MAX(COALESCE(ii.article, '')) AS article,
+                          COUNT(f.id) AS findings,
+                          COALESCE(SUM(CASE WHEN f.feedback = 'confirmed'
+                                            THEN 1 ELSE 0 END), 0) AS confirmed,
+                          COALESCE(SUM(CASE WHEN f.feedback = 'false_alarm'
+                                            THEN 1 ELSE 0 END), 0) AS false_alarm,
+                          COALESCE(SUM(CASE WHEN f.status = 'open'
+                                            THEN 1 ELSE 0 END), 0) AS open,
+                          COALESCE(SUM(CASE WHEN f.status = 'open'
+                                            THEN f.amount ELSE 0 END), 0) AS open_amount,
+                          COALESCE(SUM(CASE WHEN f.feedback = 'confirmed'
+                                            THEN f.amount ELSE 0 END), 0) AS confirmed_amount
+                   FROM findings f
+                   JOIN invoices i ON i.id = f.invoice_id
+                   LEFT JOIN invoice_items ii ON ii.id = f.invoice_item_id
+                   GROUP BY i.supplier, COALESCE(ii.article_norm, '')"""
             ).fetchall()
 
         suppliers: List[dict] = []
@@ -708,6 +753,40 @@ class Store:
             )
         )
 
+        articles: List[dict] = []
+        for row in article_rows:
+            confirmed = int(row["confirmed"])
+            false_alarm = int(row["false_alarm"])
+            reviewed = confirmed + false_alarm
+            precision = (confirmed / reviewed) if reviewed else None
+            avoided_minutes = round(confirmed * minutes, 2)
+            articles.append(
+                {
+                    "article": row["article"] or NO_POSITION_LABEL,
+                    "supplier": row["supplier"],
+                    "findings": int(row["findings"]),
+                    "confirmed": confirmed,
+                    "false_alarm": false_alarm,
+                    "open": int(row["open"]),
+                    "open_amount": round(float(row["open_amount"]), 2),
+                    "precision": round(precision, 4)
+                    if precision is not None
+                    else None,
+                    "confirmed_amount": round(float(row["confirmed_amount"]), 2),
+                    "avoided_review_minutes": avoided_minutes,
+                    "avoided_review_cost_eur": round(avoided_minutes / 60 * rate, 2),
+                }
+            )
+        articles.sort(
+            key=lambda entry: (
+                -entry["avoided_review_cost_eur"],
+                -entry["confirmed_amount"],
+                entry["article"],
+                entry["supplier"],
+            )
+        )
+        articles = articles[:limit]
+
         reviewed_total = total_confirmed + total_false_alarm
         total_precision = (total_confirmed / reviewed_total) if reviewed_total else None
         total_minutes = round(total_confirmed * minutes, 2)
@@ -727,10 +806,12 @@ class Store:
         }
         return {
             "suppliers": suppliers,
+            "articles": articles,
             "totals": totals,
             "parameters": {
                 "review_minutes_per_finding": minutes,
                 "hourly_rate_eur": rate,
+                "article_limit": limit,
             },
         }
 

@@ -79,6 +79,12 @@
       <thead><tr><th>Lieferant</th><th class="amount">Findings</th><th class="amount">Bestätigt</th><th class="amount">Fehlalarm</th><th class="amount">Precision</th><th class="amount">Bestätigtes Volumen</th><th class="amount">Vermiedene Minuten</th><th class="amount">Vermiedene Kosten</th></tr></thead>
       <tbody id="roi-suppliers"><tr><td colspan="8" class="muted">Lade …</td></tr></tbody>
     </table>
+    <h3 style="margin:1.25rem 0 .25rem; font-size:.9rem;">Top-Artikel <span class="muted">(nach vermiedenen Kosten)</span></h3>
+    <p class="muted" id="roi-articles-hint"></p>
+    <table id="roi-articles-table" style="margin-top:.5rem">
+      <thead><tr><th>Artikel</th><th>Lieferant</th><th class="amount">Bestätigt</th><th class="amount">Vermiedener Betrag</th><th class="amount">Vermiedene Kosten</th></tr></thead>
+      <tbody id="roi-articles"><tr><td colspan="5" class="muted">Lade …</td></tr></tbody>
+    </table>
   </section>
 
   <section>
@@ -208,21 +214,39 @@ async function loadRoi() {
     document.getElementById('roi-hint').textContent = 'Noch kein Feedback erfasst — bestätigen oder verwerfen Sie Findings, um den ROI-Nachweis zu füllen.';
     table.style.display = 'none';
     document.getElementById('roi-suppliers').innerHTML = '';
-    return;
+  } else {
+    document.getElementById('roi-hint').textContent = '';
+    table.style.display = '';
+    const rows = d.suppliers.map(s => `<tr>
+      <td>${esc(s.supplier)}</td>
+      <td class="amount">${esc(s.findings)}</td>
+      <td class="amount">${esc(s.confirmed)}</td>
+      <td class="amount">${esc(s.false_alarm)}</td>
+      <td class="amount">${pct(s.precision)}</td>
+      <td class="amount">${money(s.confirmed_amount)}</td>
+      <td class="amount">${esc(s.avoided_review_minutes)}</td>
+      <td class="amount">${money(s.avoided_review_cost_eur)}</td>
+    </tr>`).join('');
+    document.getElementById('roi-suppliers').innerHTML = rows || '<tr><td colspan="8" class="muted">Keine Lieferanten mit Feedback.</td></tr>';
   }
-  document.getElementById('roi-hint').textContent = '';
-  table.style.display = '';
-  const rows = d.suppliers.map(s => `<tr>
-    <td>${esc(s.supplier)}</td>
-    <td class="amount">${esc(s.findings)}</td>
-    <td class="amount">${esc(s.confirmed)}</td>
-    <td class="amount">${esc(s.false_alarm)}</td>
-    <td class="amount">${pct(s.precision)}</td>
-    <td class="amount">${money(s.confirmed_amount)}</td>
-    <td class="amount">${esc(s.avoided_review_minutes)}</td>
-    <td class="amount">${money(s.avoided_review_cost_eur)}</td>
-  </tr>`).join('');
-  document.getElementById('roi-suppliers').innerHTML = rows || '<tr><td colspan="8" class="muted">Keine Lieferanten mit Feedback.</td></tr>';
+
+  const articles = d.articles || [];
+  const articlesTable = document.getElementById('roi-articles-table');
+  if (articles.length) {
+    document.getElementById('roi-articles-hint').textContent = '';
+    articlesTable.style.display = '';
+    document.getElementById('roi-articles').innerHTML = articles.map(a => `<tr>
+      <td>${esc(a.article)}</td>
+      <td>${esc(a.supplier)}</td>
+      <td class="amount">${esc(a.confirmed)}</td>
+      <td class="amount">${money(a.confirmed_amount)}</td>
+      <td class="amount">${money(a.avoided_review_cost_eur)}</td>
+    </tr>`).join('');
+  } else {
+    document.getElementById('roi-articles-hint').textContent = 'Noch keine bestätigten Artikel — bestätigen Sie Findings, um die Top-Artikel zu sehen.';
+    articlesTable.style.display = 'none';
+    document.getElementById('roi-articles').innerHTML = '';
+  }
 }
 async function feedback(id, verdict) {
   await api('/api/findings/' + id + '/feedback', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({verdict})});
