@@ -51,6 +51,27 @@ def _non_negative_query_float(
     return value
 
 
+def _non_negative_query_int(
+    query: Dict[str, List[str]], name: str
+) -> Optional[int]:
+    """Read an optional non-negative integer from a parsed query string.
+
+    Returns ``None`` when the parameter is absent/empty. Raises
+    :class:`ValueError` (mapped to ``400`` by the dispatcher) for non-integer or
+    negative values.
+    """
+    raw = query.get(name, [None])[0]
+    if raw is None or raw == "":
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        raise ValueError("%s must be an integer" % name)
+    if value < 0:
+        raise ValueError("%s must be >= 0" % name)
+    return value
+
+
 class Router:
     """Minimal path router supporting ``:param`` segments."""
 
@@ -197,8 +218,11 @@ class RadarHandler(BaseHTTPRequestHandler):
     def h_roi(self, params, query) -> None:
         review_minutes = _non_negative_query_float(query, "review_minutes")
         hourly_rate = _non_negative_query_float(query, "hourly_rate")
+        article_limit = _non_negative_query_int(query, "article_limit")
         self._send_json(
-            self.store.roi_report(self.settings, review_minutes, hourly_rate)
+            self.store.roi_report(
+                self.settings, review_minutes, hourly_rate, article_limit
+            )
         )
 
     def h_suppliers(self, params, query) -> None:

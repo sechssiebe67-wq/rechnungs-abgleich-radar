@@ -10,13 +10,21 @@ mit Fundstelle, Abweichungsbetrag in Euro und Begründung.
 
 Zielbild: Prüfaufwand sinkt von Minuten pro Rechnung auf Sekunden pro Auffälligkeit.
 
+Der **ROI-Nachweis** (`GET /api/stats/roi`) macht diesen Nutzen für den Preistest
+in Euro greifbar: Er rechnet bestätigte Treffer in vermiedenen Prüfaufwand und
+vermiedene Fehlzahlungen um — heute je Lieferant und zusätzlich **je Artikel**,
+damit sichtbar wird, welche Artikel und Positionen den Aufwand und die
+vermiedenen Zahlungen treiben.
+
 ## Intended users
 
 Finanz- und Kreditorenbuchhaltungs-Teams in KMU (5–50 Mitarbeitende) mit
 100–2.000 Eingangsrechnungen pro Monat, die heute manuell gegen Bestellungen,
 Verträge und Preislisten prüfen. Die Anwender laden Buchhaltungsexporte und
 Referenzdaten hoch, prüfen die markierten Auffälligkeiten und geben pro Treffer
-Feedback (bestätigt / Fehlalarm).
+Feedback (bestätigt / Fehlalarm). Die Teams nutzen den ROI-Nachweis als
+Argument im Preistest und schneiden die Regelprofile anhand der teuersten
+Artikelgruppen zu.
 
 ## Problem
 
@@ -85,11 +93,22 @@ persistentem Speicher.
   Volumen, Precision, bestätigtes Volumen sowie vermiedene Minuten und Kosten;
   `parameters` weist die wirksamen Annahmen aus. Die Werte lassen sich über
   `?review_minutes=` und `?hourly_rate=` ohne Neustart als What-if
-  überschreiben (ungültige Werte → `400`). Grundlage bleiben `findings`,
-  `invoices` und `suppliers`; es werden keine neuen Tabellen angelegt. Die
-  Web-Oberfläche zeigt die Sektion „ROI-Nachweis“ mit den aggregierten
-  Kennzahlen und einer Tabelle je Lieferant; ohne Feedback erscheint ein Hinweis
-  statt einer leeren Tabelle.
+  überschreiben (ungültige Werte → `400`). Zusätzlich liefert der Report einen
+  Block `articles`: pro **Artikel** (normalisiert über `normalize_text`,
+  Anzeigename aus der Rechnungsposition) je Lieferant `findings`, `confirmed`,
+  `false_alarm`, `open`, `open_amount`, `precision`, `confirmed_amount`,
+  `avoided_review_minutes` und `avoided_review_cost_eur` — mit derselben Formel
+  und denselben Annahmen wie der Lieferanten-Block. Die Liste ist absteigend
+  nach vermiedenen Kosten (dann nach bestätigtem Betrag) sortiert und über
+  `?article_limit=` (Default `50`, `>= 0`, ungültig → `400`) begrenzbar, damit
+  sie bei vielen Artikeln nicht unbegrenzt wächst. Der Artikel-Block ist eine
+  zusätzliche Sicht und verändert `suppliers`/`totals` nicht; `totals` bleibt
+  exakt die Summe über alle Lieferanten. Grundlage bleiben `findings`,
+  `invoices`, `invoice_items` und `suppliers`; es werden keine neuen Tabellen
+  angelegt. Die Web-Oberfläche zeigt die Sektion „ROI-Nachweis“ mit den
+  aggregierten Kennzahlen, einer Tabelle je Lieferant und der Tabelle
+  „Top-Artikel“; ohne bestätigte Findings erscheint ein Hinweis statt einer
+  leeren Tabelle.
 - **Wöchentlicher Digest** als E-Mail-fähiger HTML-Report und als JSON.
 - **Digest-Versand per Webhook und SMTP** (`radar/notify.py`)
   - Aktive Zustellung des Wochen-Digests statt manuellem Abruf.
@@ -128,18 +147,20 @@ priorisiert die Freigabe-Entscheidung.
    über `POST /api/digest/weekly/send` bzw. den optionalen Scheduler, inkl.
    Webhook- und SMTP-Kanälen und Helm-Konfiguration (`digest.*`). Verbleibende
    Richtung: **Rollup über mehrere Gesellschaften** in einem gemeinsamen Digest.
-5. **ROI-Nachweis — teilweise umgesetzt.** Auswertung vermiedener Beträge
-   (bestätigte Findings × Prüfaufwand) für den Preistest. Als Zwischenschritt
-   ist die **lieferantenbezogene Precision** über `GET /api/stats/by-supplier`
-   verfügbar; mit dem **Rule-Impact-Report** (`GET /api/stats/rule-impact`)
-   liegt zusätzlich die Vorher/Nachher-Gegenüberstellung je Lieferant und
-   Regel-Update vor. **Umgesetzt:** `GET /api/stats/roi` rechnet die
-   bestätigten Treffer je Lieferant und aggregiert in vermiedene Prüfminuten
-   und -kosten (EUR) sowie vermiedene Fehlzahlungen (`confirmed_amount`) um;
-   die Annahmen (Minuten pro Finding, Stundensatz) sind konfigurierbar und per
-   Query als What-if überschreibbar. **Verbleibend:** eine granulare
-   **Artikel-/Positions-Aufschlüsselung** (welche Artikel und Positionen den
-   Aufwand und die vermiedenen Zahlungen treiben) sowie ein Rollup über
+5. **ROI-Nachweis — umgesetzt, inkl. Artikel-Aufschlüsselung.** Auswertung
+   vermiedener Beträge (bestätigte Findings × Prüfaufwand) für den Preistest.
+   Als Zwischenschritt ist die **lieferantenbezogene Precision** über
+   `GET /api/stats/by-supplier` verfügbar; mit dem **Rule-Impact-Report**
+   (`GET /api/stats/rule-impact`) liegt zusätzlich die Vorher/Nachher-
+   Gegenüberstellung je Lieferant und Regel-Update vor. **Umgesetzt:**
+   `GET /api/stats/roi` rechnet die bestätigten Treffer je Lieferant und
+   aggregiert in vermiedene Prüfminuten und -kosten (EUR) sowie vermiedene
+   Fehlzahlungen (`confirmed_amount`) um; die Annahmen (Minuten pro Finding,
+   Stundensatz) sind konfigurierbar und per Query als What-if überschreibbar.
+   Zusätzlich liefert der Report den Block `articles`, der je Artikel und
+   Lieferant ausweist, welche Artikel und Positionen den Aufwand und die
+   vermiedenen Zahlungen treiben — sortiert nach vermiedenen Kosten und über
+   `?article_limit=` begrenzbar. **Verbleibend:** nur noch der Rollup über
    mehrere Gesellschaften.
 
 ## Validation plan (Bezug zur Produkthypothese)
@@ -152,8 +173,12 @@ Lieferanten-Regelprofilen verschritten werden — so zeigt sich, ob ein Profil d
 Fehlalarme eines Lieferanten tatsächlich reduziert. Der **Rule-Impact-Report**
 `GET /api/stats/rule-impact` stellt dafür Findings, Feedback und Precision
 explizit vor und nach dem jüngsten Regel-Update gegenüber und macht den Effekt
-einer Nachjustierung direkt sichtbar. Die Feedback- und Digest-Funktionen
-dieses Inkrements liefern dafür die Messgrößen.
+einer Nachjustierung direkt sichtbar. Der **ROI-Nachweis** übersetzt das
+Feedback schließlich in vermiedene Prüfkosten und vermiedene Fehlzahlungen — je
+Lieferant und je **Artikel** — und zeigt so im Preistest, welche wiederkehrenden
+Artikelgruppen den Nutzen treiben und wo sich ein Regelprofil gezielt
+zuschneiden lässt. Die Feedback- und Digest-Funktionen dieses Inkrements liefern
+dafür die Messgrößen.
 
 Der **Digest-Versand** unterstützt den Concierge-Test direkt: Der Wochen-Digest
 wird den Testkunden per Webhook/SMTP aktiv zugestellt (statt manuellem Abruf),

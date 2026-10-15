@@ -63,7 +63,7 @@ python3 -m unittest discover -s tests -v
 | `GET /api/stats` | Kennzahlen inkl. Precision aus Feedback |
 | `GET /api/stats/by-supplier` | Precision, Findings und offenes Volumen je Lieferant inkl. angewendeter Regeln |
 | `GET /api/stats/rule-impact` | Vorher/Nachher-Vergleich der Findings und Precision je Lieferant vor/nach dem letzten Regel-Update |
-| `GET /api/stats/roi` | ROI-Nachweis: vermiedener Prüfaufwand und vermiedene Fehlzahlungen aus dem Feedback, je Lieferant und gesamt (`?review_minutes=`, `?hourly_rate=`) |
+| `GET /api/stats/roi` | ROI-Nachweis: vermiedener Prüfaufwand und vermiedene Fehlzahlungen aus dem Feedback, je Lieferant, je Artikel und gesamt (`?review_minutes=`, `?hourly_rate=`, `?article_limit=`) |
 | `POST /api/suppliers` | Lieferant anlegen |
 | `GET /api/supplier-rules` | Liste aller Lieferanten-Regeln |
 | `GET /api/supplier-rules/:supplier` | Einzelne Regel oder `404` |
@@ -187,14 +187,26 @@ Treffer entspricht einer manuell vermiedenen Prüfung.
 Summe der Beträge bestätigter Findings (`confirmed_amount`) weist zusätzlich die
 vermiedenen Fehlzahlungen aus.
 
-Der Report liefert drei Blöcke:
+Der Report liefert vier Blöcke:
 
 - `parameters`: die wirksamen Annahmen `review_minutes_per_finding` und
   `hourly_rate_eur` (aus `RADAR_REVIEW_MINUTES_PER_FINDING` /
-  `RADAR_REVIEW_HOURLY_RATE_EUR`).
+  `RADAR_REVIEW_HOURLY_RATE_EUR`) sowie `article_limit`.
 - `suppliers`: je Lieferant `findings`, `confirmed`, `false_alarm`, `open`,
   `open_amount`, `precision`, `confirmed_amount`, `avoided_review_minutes` und
   `avoided_review_cost_eur`.
+- `articles`: zusätzliche **Artikel-/Positions-Aufschlüsselung**. Jeder Eintrag
+  gruppiert die Findings eines Artikels je Lieferant (Artikel über
+  `normalize_text` normalisiert, Anzeigename aus der Rechnungsposition; Findings
+  ohne Position wie `missing_po`/`duplicate` laufen unter
+  `(ohne Position)`). Felder: `article`, `supplier`, `findings`, `confirmed`,
+  `false_alarm`, `open`, `open_amount`, `precision`, `confirmed_amount`,
+  `avoided_review_minutes` und `avoided_review_cost_eur` — berechnet mit
+  denselben Annahmen und derselben Formel wie `suppliers`. Sortiert absteigend
+  nach `avoided_review_cost_eur`, bei Gleichstand nach `confirmed_amount` und
+  über `?article_limit=` (Default `50`, `>= 0`) begrenzbar. Der Block ist eine
+  zusätzliche Sicht: `suppliers` und `totals` bleiben unverändert, `totals` ist
+  weiterhin exakt die Summe über alle Lieferanten.
 - `totals`: dieselben Kennzahlen aggregiert über alle Lieferanten inklusive
   Gesamt-Precision.
 
@@ -204,6 +216,9 @@ curl -sS http://localhost:8080/api/stats/roi
 
 # What-if ohne Neustart: 10 Minuten pro Finding und 60 EUR/h
 curl -sS 'http://localhost:8080/api/stats/roi?review_minutes=10&hourly_rate=60'
+
+# Nur die 10 teuersten Artikel (0 = leere Liste)
+curl -sS 'http://localhost:8080/api/stats/roi?article_limit=10'
 ```
 
 ```json
@@ -222,6 +237,21 @@ curl -sS 'http://localhost:8080/api/stats/roi?review_minutes=10&hourly_rate=60'
       "avoided_review_cost_eur": 18.0
     }
   ],
+  "articles": [
+    {
+      "article": "Schraube M8",
+      "supplier": "ACME GmbH",
+      "findings": 5,
+      "confirmed": 4,
+      "false_alarm": 1,
+      "open": 0,
+      "open_amount": 0.0,
+      "precision": 0.8,
+      "confirmed_amount": 64.0,
+      "avoided_review_minutes": 16.0,
+      "avoided_review_cost_eur": 12.0
+    }
+  ],
   "totals": {
     "suppliers": 1,
     "findings": 12,
@@ -234,15 +264,22 @@ curl -sS 'http://localhost:8080/api/stats/roi?review_minutes=10&hourly_rate=60'
     "avoided_review_minutes": 24.0,
     "avoided_review_cost_eur": 18.0
   },
-  "parameters": {"review_minutes_per_finding": 4.0, "hourly_rate_eur": 45.0}
+  "parameters": {
+    "review_minutes_per_finding": 4.0,
+    "hourly_rate_eur": 45.0,
+    "article_limit": 50
+  }
 }
 ```
 
-Ungültige Overrides (negativ oder nicht numerisch) antworten mit `400` und
-einem JSON-Fehlerkörper. Ohne Feedback ist die Precision `null` und der
-vermiedene Aufwand `0`. Die Web-Oberfläche zeigt die Sektion „ROI-Nachweis“ mit
-den aggregierten Kennzahlen und einer Tabelle je Lieferant; solange kein
-Feedback vorliegt, erscheint dort ein Hinweis statt einer leeren Tabelle.
+Ungültige Overrides (negativ oder nicht numerisch; `article_limit` zusätzlich
+nicht ganzzahlig) antworten mit `400` und einem JSON-Fehlerkörper. Ohne Feedback
+ist die Precision `null` und der vermiedene Aufwand `0`. Die Web-Oberfläche
+zeigt die Sektion „ROI-Nachweis“ mit den aggregierten Kennzahlen, einer Tabelle
+je Lieferant und der Tabelle „Top-Artikel“ (Artikel, Lieferant, bestätigt,
+vermiedener Betrag, vermiedene Kosten); solange kein Feedback bzw. kein
+bestätigtes Finding vorliegt, erscheint dort ein Hinweis statt einer leeren
+Tabelle.
 
 ## Wöchentlicher Digest
 
