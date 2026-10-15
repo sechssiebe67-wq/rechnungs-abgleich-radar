@@ -22,6 +22,7 @@ from .db import (
     DEFAULT_SUPPLIER_RULE_ORDER,
     FINDING_ORDER_BY,
     INVOICE_ORDER_BY,
+    REVIEW_STATUS_VALUES,
     SUPPLIER_RULE_ORDER_BY,
     Store,
 )
@@ -118,6 +119,23 @@ def _whitelisted_sort(
 def _finding_sort(query: Dict[str, List[str]]) -> Optional[str]:
     """Read the optional, whitelisted ``sort`` parameter for findings."""
     return _whitelisted_sort(query, "sort", FINDING_ORDER_BY)
+
+
+def _review_status(query: Dict[str, List[str]]) -> str:
+    """Read the optional, whitelisted ``review_status`` filter for findings.
+
+    Returns ``"all"`` when absent/empty (no filter, fully backwards
+    compatible). Raises :class:`ValueError` (mapped to ``400`` by the
+    dispatcher) for any value outside :data:`REVIEW_STATUS_VALUES`.
+    """
+    raw = query.get("review_status", [None])[0]
+    if raw is None or raw == "":
+        return "all"
+    if raw not in REVIEW_STATUS_VALUES:
+        raise ValueError(
+            "review_status must be one of: %s" % ", ".join(REVIEW_STATUS_VALUES)
+        )
+    return raw
 
 
 class Router:
@@ -493,6 +511,7 @@ class RadarHandler(BaseHTTPRequestHandler):
         min_amount = query.get("min_amount", [None])[0]
         invoice_id = query.get("invoice_id", [None])[0]
         entities = _query_list(query, "entity") or None
+        review_status = _review_status(query)
         limit = _non_negative_query_int(query, "limit")
         offset = _non_negative_query_int(query, "offset")
         sort = _finding_sort(query)
@@ -501,6 +520,7 @@ class RadarHandler(BaseHTTPRequestHandler):
             "min_amount": float(min_amount) if min_amount else None,
             "invoice_id": int(invoice_id) if invoice_id else None,
             "entities": entities,
+            "review_status": review_status,
         }
         findings = self.store.list_findings(
             limit=limit, offset=offset, order_by=sort, **filters

@@ -80,6 +80,13 @@
     <p><a id="digest-html-link" href="/api/digest/weekly.html" target="_blank" rel="noreferrer">Wochen-Digest öffnen</a> ·
        <a id="digest-json-link" href="/api/digest/weekly" target="_blank" rel="noreferrer">als JSON</a></p>
     <div class="controls">
+      <label class="muted">Prüfstatus
+        <select id="findings-review-status" onchange="reloadList('findings')">
+          <option value="all">Alle</option>
+          <option value="open" selected>Offen</option>
+          <option value="reviewed">Durchgesehen</option>
+        </select>
+      </label>
       <label class="muted">Sortierung <select id="findings-sort" onchange="setSort('findings', this.value)"></select></label>
       <span class="muted" id="findings-range">…</span>
       <button class="secondary" id="findings-prev" onclick="pageList('findings', -1)">Zurück</button>
@@ -102,8 +109,8 @@
       <span class="error" id="invoices-error"></span>
     </div>
     <table>
-      <thead><tr><th>Rechnungsnr.</th><th>Lieferant</th><th>Gesellschaft</th><th>Datum</th><th class="amount">Findings</th><th class="amount">Offen</th><th></th></tr></thead>
-      <tbody id="invoices"><tr><td colspan="7" class="muted">Lade …</td></tr></tbody>
+      <thead><tr><th>Rechnungsnr.</th><th>Lieferant</th><th>Gesellschaft</th><th>Datum</th><th class="amount">Findings</th><th class="amount">Findings offen</th><th class="amount">Offenes Volumen</th><th>Status</th><th></th></tr></thead>
+      <tbody id="invoices"><tr><td colspan="9" class="muted">Lade …</td></tr></tbody>
     </table>
   </section>
 
@@ -250,6 +257,10 @@ async function api(path, options) {
   return data;
 }
 function money(v) { return new Intl.NumberFormat('de-DE', {minimumFractionDigits:2, maximumFractionDigits:2}).format(v) + ' EUR'; }
+function statusLabel(v) {
+  const labels = { clean: 'sauber', open: 'offen', reviewed: 'durchgesehen' };
+  return esc(labels[v] || v || '—');
+}
 function esc(s) {
   return String(s == null ? '' : s)
     .replace(/&/g, '&amp;')
@@ -262,13 +273,16 @@ function esc(s) {
 const PAGE_SIZE = 25;
 const LIST_SORTS = {
   findings: ['amount_desc', 'amount_asc', 'created_at_desc', 'created_at_asc'],
-  invoices: ['created_at_desc', 'created_at_asc', 'invoice_number_asc', 'invoice_number_desc'],
+  invoices: ['created_at_desc', 'created_at_asc', 'invoice_number_asc', 'invoice_number_desc',
+    'open_amount_desc', 'open_amount_asc', 'open_finding_count_desc', 'open_finding_count_asc'],
   rules: ['supplier_asc', 'supplier_desc', 'updated_at_desc', 'updated_at_asc'],
 };
 const SORT_LABELS = {
   amount_desc: 'Betrag ↓', amount_asc: 'Betrag ↑',
   created_at_desc: 'Erstellt ↓', created_at_asc: 'Erstellt ↑',
   invoice_number_asc: 'Rechnungsnr. ↑', invoice_number_desc: 'Rechnungsnr. ↓',
+  open_amount_desc: 'Offenes Volumen ↓', open_amount_asc: 'Offenes Volumen ↑',
+  open_finding_count_desc: 'Findings offen ↓', open_finding_count_asc: 'Findings offen ↑',
   supplier_asc: 'Lieferant ↑', supplier_desc: 'Lieferant ↓',
   updated_at_desc: 'Geändert ↓', updated_at_asc: 'Geändert ↑',
 };
@@ -497,11 +511,18 @@ async function sendDigest() {
     status.textContent = 'Fehler: ' + e.message;
   }
 }
+function selectedReviewStatus() {
+  const sel = document.getElementById('findings-review-status');
+  return (sel && sel.value) || 'all';
+}
+function findingsFilters(reviewStatus, entities) {
+  return { status: 'open', review_status: reviewStatus, entity: entities };
+}
 async function loadFindings() {
   const state = listState.findings;
   try {
     const d = await api('/api/findings' + buildListQuery(Object.assign({}, state, {
-      extra: { status: 'open', entity: selectedEntities() },
+      extra: findingsFilters(selectedReviewStatus(), selectedEntities()),
     })));
     showListError('findings', '');
     const rows = d.findings.map(f => `<tr>
@@ -528,10 +549,12 @@ async function loadInvoices() {
       <td>${esc(i.entity)}</td>
       <td>${esc(i.invoice_date || '—')}</td>
       <td class="amount">${esc(i.finding_count)}</td>
+      <td class="amount">${esc(i.open_finding_count)}</td>
       <td class="amount">${money(i.open_amount)}</td>
+      <td>${statusLabel(i.review_status)}</td>
       <td><button class="secondary" onclick="showAudit(${i.id})">Audit</button></td>
     </tr>`).join('');
-    document.getElementById('invoices').innerHTML = rows || '<tr><td colspan="7" class="muted">Keine Rechnungen vorhanden.</td></tr>';
+    document.getElementById('invoices').innerHTML = rows || '<tr><td colspan="9" class="muted">Keine Rechnungen vorhanden.</td></tr>';
     updatePager('invoices', d);
   } catch (e) {
     showListError('invoices', e.message);

@@ -76,12 +76,12 @@ python3 -m unittest discover -s tests -v
 | `DELETE /api/supplier-rules/:supplier` | Regel löschen, `404` bei unbekanntem Lieferanten |
 | `POST /api/reference-prices` | Vertrags-/akzeptierten Preis anlegen (JSON, Liste oder `prices`) |
 | `POST /api/purchase-orders` | Bestellung mit Positionen anlegen |
-| `GET /api/invoices` | Liste aller Rechnungen; optional seitenweise (`?limit=`, `?offset=`) und sortiert (`?sort=`) |
+| `GET /api/invoices` | Liste aller Rechnungen inkl. Prüf-Last je Rechnung (`finding_count`, `open_finding_count`, `reviewed_finding_count`, `open_amount`, `review_status`); optional seitenweise (`?limit=`, `?offset=`) und sortiert (`?sort=`, u. a. `open_amount_desc`, `open_finding_count_desc`) |
 | `POST /api/invoices` | Rechnung per JSON anlegen und sofort abgleichen |
 | `POST /api/invoices/import` | Rechnungen per CSV (ein Datensatz pro Position) importieren |
 | `GET /api/invoices/:id` | Nachvollziehbarkeit: was wurde verglichen, was wich ab; Findings je Artikel/Position als `items` + `items_total_amount` |
 | `POST /api/reconcile` | Alle Rechnungen (oder `{"invoice_id": …}`) neu abgleichen |
-| `GET /api/findings?status=open&min_amount=&entity=` | Priorisierte Auffälligkeiten; optional seitenweise (`?limit=`, `?offset=`) und sortiert (`?sort=`) |
+| `GET /api/findings?status=open&min_amount=&entity=` | Priorisierte Auffälligkeiten; optional nach Rechnungs-Prüfstatus gefiltert (`?review_status=open\|reviewed\|all`), seitenweise (`?limit=`, `?offset=`) und sortiert (`?sort=`) |
 | `POST /api/findings/:id/feedback` | `{"verdict": "confirmed"|"false_alarm"}` |
 | `GET /api/digest/weekly[.html]?entity=&cost_center=` | Wöchentlicher Digest als JSON/HTML inkl. Aufschlüsselung `by_entity`/`by_cost_center`/`by_supplier`, optional auf Gesellschaften und Kostenstellen gefiltert (UND-verknüpft) |
 | `POST /api/digest/weekly/send` | Digest aktiv per Webhook/SMTP zustellen (`{"entities": ["DE01"], "cost_centers": ["KST-100"]}`); Webhook-Payload enthält die Aufschlüsselung, liefert je Kanal `sent`/`skipped`/`error` |
@@ -180,16 +180,34 @@ begrenzen und umsortieren:
 | `limit` | maximale Anzahl Findings ab dem Offset | nicht-negative Ganzzahl |
 | `offset` | Anzahl der zu überspringenden Findings | nicht-negative Ganzzahl |
 | `sort` | Sortierung: `amount_desc` (Default), `amount_asc`, `created_at_desc`, `created_at_asc` | Whitelist |
+| `review_status` | Rechnungs-Prüfstatus: `all` (Default), `open`, `reviewed` | Whitelist |
 
 Die Antwort enthält zusätzlich `limit` (effektiv), `offset` (effektiv), `sort`
 (effektiv), `count` (gelieferte Findings) und `total_count` (alle Treffer vor
 der Pagination). `total_amount` ist die Summe über die gelieferte Seite.
-Ungültige Werte — unbekanntes `sort`, negatives `limit` oder nicht-ganzzahliges
-`offset` — liefern `400` mit einem JSON-Fehlerkörper.
+Ungültige Werte — unbekanntes `sort`, negatives `limit`, nicht-ganzzahliges
+`offset` oder ein unbekannter `review_status` — liefern `400` mit einem
+JSON-Fehlerkörper.
+
+Der `review_status`-Filter setzt auf der **Rechnung** an, nicht auf dem
+einzelnen Finding: `open` liefert die Findings von Rechnungen mit mindestens
+einem Finding **ohne Feedback**, `reviewed` die Findings von Rechnungen, deren
+Findings **alle** ein Feedback haben; `all` (oder weglassen) filtert nicht.
+`count`/`total_count` berücksichtigen denselben Filter. Ohne neue Parameter
+bleibt die Antwort byte-identisch zur bisherigen.
 
 ```sh
 # Zweite Seite à 5 Einträgen, nach Erstellungszeit aufsteigend
 curl -sS 'http://localhost:8080/api/findings?limit=5&offset=5&sort=created_at_asc'
+
+# Nur Findings von Rechnungen, die noch nicht durchgesehen sind
+curl -sS 'http://localhost:8080/api/findings?review_status=open'
+
+# Nur Findings vollständig durchgesehener Rechnungen
+curl -sS 'http://localhost:8080/api/findings?review_status=reviewed'
+
+# Unbekannter Wert -> 400
+curl -sS 'http://localhost:8080/api/findings?review_status=foo'
 ```
 
 ### Pagination und Sortierung der Rechnungs- und Regel-Listen
@@ -203,7 +221,7 @@ Bestand begrenzen und umsortieren.
 
 | Endpoint | `sort`-Whitelist | Default |
 | --- | --- | --- |
-| `GET /api/invoices` | `created_at_desc`, `created_at_asc`, `invoice_number_asc`, `invoice_number_desc` | `created_at_desc` |
+| `GET /api/invoices` | `created_at_desc`, `created_at_asc`, `invoice_number_asc`, `invoice_number_desc`, `open_amount_desc`, `open_amount_asc`, `open_finding_count_desc`, `open_finding_count_asc` | `created_at_desc` |
 | `GET /api/supplier-rules` | `supplier_asc`, `supplier_desc`, `updated_at_desc`, `updated_at_asc` | `supplier_asc` |
 
 `limit` und `offset` sind jeweils nicht-negative Ganzzahlen. Die Antwort enthält
@@ -213,16 +231,49 @@ Felder `invoices` bzw. `supplier_rules` behalten Name und Struktur. Ungültige
 Werte — unbekanntes `sort`, negatives oder nicht-ganzzahliges `limit`/`offset` —
 liefern `400` mit einem JSON-Fehlerkörper.
 
+Jede Rechnung in `GET /api/invoices` trägt zusätzlich die **rechnungsbezogene
+Prüf-Last**:
+
+| Feld | Bedeutung |
+| --- | --- |
+| `finding_count` | Anzahl aller Findings der Rechnung |
+| `open_finding_count` | Findings ohne Feedback |
+| `reviewed_finding_count` | Findings mit Feedback |
+| `open_amount` | Summe der Beträge offener Findings (EUR) |
+| `review_status` | `clean` (keine Findings), `open` (mind. ein Finding ohne Feedback), sonst `reviewed` |
+
+Eine Rechnung ohne Findings hat `review_status == "clean"` und
+`open_amount == 0.0`. Die Werte werden per `LEFT JOIN`/Aggregat über `findings`
+berechnet (kein N+1). Die Summe von `open_amount` über alle Rechnungen einer
+Gesellschaft entspricht dem `open_amount` aus `GET /api/stats?entity=<Gesellschaft>`.
+Die Sortierungen `open_amount_desc` und `open_finding_count_desc` (jeweils mit
+deterministischem Sekundärschlüssel `id`) stellen die Rechnungen mit der größten
+offenen Prüflast nach vorn.
+
 Die Web-Oberfläche (`/`) bedient diese Parameter jetzt direkt: Für Findings,
 Rechnungen und Lieferanten-Regeln gibt es je eine Sortier-Auswahl, „Zurück“/
 „Weiter“-Buttons mit fester Seitengröße (25) und die Anzeige „X–Y von Z“ aus
 `count`/`total_count`; ohne Bedienung entsprechen die Anfragen den dokumentierten
-Defaults der Endpoints. Bei einem `400` (z. B. manipulierter `sort`-Wert) zeigt
-die Oberfläche eine sichtbare Fehlermeldung.
+Defaults der Endpoints. Die Findings-Sektion bietet zusätzlich eine Auswahl
+„Prüfstatus“ (`Alle`/`Offen`/`Durchgesehen`), die als `review_status` mitgesendet
+wird. Die Findings-Liste behält dabei den bestehenden Finding-Filter
+`status=open` und kombiniert ihn per UND mit dem gewählten `review_status`;
+geprüfte Findings einer noch offenen Rechnung erscheinen also weiterhin nicht in
+der Sektion „Offene Auffälligkeiten“. Die Rechnungs-Sektion zeigt die Spalten „Findings offen“, „Offenes
+Volumen“ und „Status“ und bietet die Sortierungen `open_amount_desc` und
+`open_finding_count_desc`. Bei einem `400` (z. B. manipulierter `sort`- oder
+`review_status`-Wert) zeigt die Oberfläche eine sichtbare Fehlermeldung, ohne die
+zuletzt geladene Ansicht zu verwerfen.
 
 ```sh
 # Zweite Seite à 10 Rechnungen, nach Rechnungsnummer aufsteigend
 curl -sS 'http://localhost:8080/api/invoices?limit=10&offset=10&sort=invoice_number_asc'
+
+# Rechnungen mit dem größten offenen Volumen zuerst
+curl -sS 'http://localhost:8080/api/invoices?sort=open_amount_desc'
+
+# Rechnungen mit den meisten offenen Findings zuerst
+curl -sS 'http://localhost:8080/api/invoices?sort=open_finding_count_desc'
 
 # Erste 5 Lieferanten-Regeln, zuletzt geänderte zuerst
 curl -sS 'http://localhost:8080/api/supplier-rules?limit=5&sort=updated_at_desc'
