@@ -49,9 +49,13 @@ Findings-Liste arbeiten sie zuerst die Rechnungen mit dem **größten offenen
 Prüfvolumen** ab (viele offene Findings bzw. hoher offener Betrag), weil dort pro
 Rechnung die meiste Arbeit gebündelt ist; die **Prüf-Last-Top-Liste**
 (`GET /api/review-workload`) liefert dafür direkt die Rechnung mit dem größten
-offenen Prüfvolumen als erste Zeile. Die Teams exportieren die Findings- und
-Rechnungsliste als CSV, um sie in Excel weiterzuverarbeiten, mit dem Einkauf zu
-teilen oder als Prüfnachweis abzulegen.
+offenen Prüfvolumen als erste Zeile. Für die gezielte Nacharbeit bündeln sie die
+Findings zusätzlich nach **Typ** (Einkauf: `missing_po`; Vertragsmanagement:
+`price_drift`) und nach **Lieferant**, um gleichartige Auffälligkeiten
+abzuarbeiten bzw. das Regelprofil eines einzelnen Lieferanten nachzuschärfen;
+die Findings-Liste sortiert dafür optional nach Artikel oder Lieferant. Die
+Teams exportieren die Findings- und Rechnungsliste als CSV, um sie in Excel
+weiterzuverarbeiten, mit dem Einkauf zu teilen oder als Prüfnachweis abzulegen.
 
 ## Problem
 
@@ -90,18 +94,36 @@ persistentem Speicher.
 - **Seitenweise Findings-Liste** (`GET /api/findings`): Der Endpoint bleibt ohne
   neue Parameter vollständig rückwärtskompatibel (weiterhin nach Betrag
   absteigend) und lässt sich bei großen Beständen über optionale Parameter
-  begrenzen und umsortieren:
+  eingrenzen, begrenzen und umsortieren:
   - `?limit=` (nicht-negative Ganzzahl) und `?offset=` (nicht-negative
     Ganzzahl) schneiden ein Fenster aus der gefilterten, sortierten Menge;
     ohne Angabe werden alle Treffer geliefert.
+  - `?finding_type=` filtert wiederholbar nach Finding-Typ (z. B. nur
+    `missing_po` für den Einkauf, nur `price_drift` für Vertragsverhandlungen);
+    mehrere Werte wirken ODER-verknüpft (`IN (...)`), gegen die anderen Filter
+    UND-verknüpft. Werte außerhalb der bekannten Finding-Typen
+    (`FINDING_LABELS`) werden abgewiesen.
+  - `?supplier=` filtert wiederholbar nach Lieferant der zugehörigen Rechnung
+    (`i.supplier`); mehrere Werte wirken ODER-verknüpft und sind mit den
+    übrigen Filtern UND-verknüpft, um das Regelprofil eines einzelnen
+    Lieferanten zu schärfen. Ein unbekannter Lieferant ist keine Fehlbedienung
+    (leeres Ergebnis).
   - `?sort=` wählt aus `amount_desc` (Default), `amount_asc`,
-    `created_at_desc` und `created_at_asc`; Werte außerhalb dieser Whitelist
-    werden abgewiesen.
-  - Die Antwort enthält zusätzlich `limit`, `offset`, `sort`, `count` (Anzahl
-    der gelieferten Findings) und `total_count` (alle Treffer vor der
-    Pagination); `total_amount` ist die Summe über die gelieferte Seite.
-  - Ungültige Werte (unbekanntes `sort`, negatives `limit`, nicht-ganzzahliges
-    `offset`) liefern `400` mit JSON-Fehlerkörper.
+    `created_at_desc`, `created_at_asc`, `article_asc`/`article_desc`
+    (nach normalisierter Artikelbezeichnung `i2.article_norm`) und
+    `supplier_asc`/`supplier_desc` (nach `i.supplier`, jeweils Sekundärschlüssel
+    `f.id`); Werte außerhalb dieser Whitelist werden abgewiesen. Findings ohne
+    Position (`missing_po`, `duplicate`, kein `invoice_item_id`) sortieren in
+    beiden Artikel-Richtungen am Ende ein (`(i2.article_norm IS NULL)`-Flag),
+    damit sie gebündelt unter `(ohne Position)` erscheinen.
+  - Die Antwort enthält zusätzlich `limit`, `offset`, `sort`, die effektiven
+    Filterwerte `finding_types`/`suppliers` (leer, wenn nicht gesetzt),
+    `count` (Anzahl der gelieferten Findings) und `total_count` (alle Treffer
+    vor der Pagination, inklusive `finding_type`/`supplier`); `total_amount`
+    ist die Summe über die gelieferte Seite.
+  - Ungültige Werte (unbekanntes `sort`, unbekannter `finding_type`, negatives
+    `limit`, nicht-ganzzahliges `offset`) liefern `400` mit JSON-Fehlerkörper;
+    leere Filterwerte (`?finding_type=&supplier=`) sind ein No-op (`200`).
 - **Seitenweise Rechnungs- und Regel-Liste** (`GET /api/invoices`,
   `GET /api/supplier-rules`): dasselbe Muster wie die Findings-Liste, ohne
   bestehende Aufrufer zu brechen. Beide Endpoints bleiben ohne neue Parameter
@@ -175,18 +197,25 @@ persistentem Speicher.
   Lieferanten-Regeln bedienen die oben beschriebenen Endpoint-Parameter direkt,
   statt bei tausenden Einträgen alles auf einmal zu laden.
   - Je Liste eine Sortier-Auswahl: Findings (`amount_desc` als Default,
-    `amount_asc`, `created_at_desc`, `created_at_asc`), Rechnungen
+    `amount_asc`, `created_at_desc`, `created_at_asc`, `article_asc`/
+    `article_desc`, `supplier_asc`/`supplier_desc`), Rechnungen
     (`created_at_desc` als Default, `created_at_asc`, `invoice_number_asc`,
     `invoice_number_desc`, `open_amount_desc`/`open_amount_asc`,
     `open_finding_count_desc`/`open_finding_count_asc`), Regeln (`supplier_asc`
     als Default, `supplier_desc`, `updated_at_desc`, `updated_at_asc`).
   - Die Findings-Sektion bietet zusätzlich eine Auswahl **„Prüfstatus“**
-    (`Alle`/`Offen`/`Durchgesehen`), die als `review_status` mitgesendet wird.
-    Der bestehende Finding-Filter `status=open` bleibt dabei erhalten und wird
-    mit dem gewählten `review_status` per UND kombiniert, sodass geprüfte
-    Findings einer noch offenen Rechnung nicht als „offen“ erscheinen;
-    die Rechnungs-Sektion zeigt die Spalten „Findings offen“, „Offenes Volumen“
-    und „Status“ (`review_status`).
+    (`Alle`/`Offen`/`Durchgesehen`), die als `review_status` mitgesendet wird,
+    sowie je eine Mehrfachauswahl **„Finding-Typ“** (Optionen aus
+    `FINDING_LABELS`) und **„Lieferant“** (Optionen aus `GET /api/suppliers`),
+    die als wiederholbares `finding_type`/`supplier` mitgesendet werden. Alle
+    Filter werden mit dem bestehenden Finding-Filter `status=open` und
+    untereinander per UND kombiniert, sodass z. B. nur `missing_po`-Findings
+    eines Lieferanten erscheinen; die Rechnungs-Sektion zeigt die Spalten
+    „Findings offen“, „Offenes Volumen“ und „Status“ (`review_status`).
+  - Der CSV-Export (`exportFindings`) reicht dieselben
+    `review_status`/`finding_type`/`supplier`-Filter an
+    `GET /api/findings/export` weiter, damit Liste und Download dieselbe
+    Treffermenge liefern.
   - „Zurück“/„Weiter“-Buttons blättern mit fester Seitengröße (25) über
     `limit`/`offset`; die Kopfzeile zeigt „X–Y von Z“ aus `count` und
     `total_count`. „Weiter“ ist deaktiviert, sobald `offset + count >=

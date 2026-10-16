@@ -83,8 +83,8 @@ python3 -m unittest discover -s tests -v
 | `GET /api/invoices/export` | Rechnungsliste als CSV-Download (`text/csv`), optional gefiltert (`?entity=`, `?cost_center=`) |
 | `GET /api/review-workload` | Top-Liste der Rechnungen mit offenen Findings absteigend nach offenem Volumen, inkl. geschätztem Prüfaufwand (`open_review_minutes`, `open_review_cost_eur`); optional `?limit=` (Default 25), `?entity=`, `?cost_center=` (mehrfach, UND-verknüpft) |
 | `POST /api/reconcile` | Alle Rechnungen (oder `{"invoice_id": …}`) neu abgleichen |
-| `GET /api/findings?status=open&min_amount=&entity=` | Priorisierte Auffälligkeiten; optional nach Rechnungs-Prüfstatus gefiltert (`?review_status=open\|reviewed\|all`), seitenweise (`?limit=`, `?offset=`) und sortiert (`?sort=`) |
-| `GET /api/findings/export` | Findings-Liste als CSV-Download (`text/csv`), optional gefiltert (`?status=`, `?min_amount=`, `?entity=`, `?review_status=`) |
+| `GET /api/findings?status=open&min_amount=&entity=` | Priorisierte Auffälligkeiten; optional nach Rechnungs-Prüfstatus (`?review_status=open\|reviewed\|all`), Finding-Typ (`?finding_type=`, mehrfach) und Lieferant (`?supplier=`, mehrfach) gefiltert (UND-verknüpft), seitenweise (`?limit=`, `?offset=`) und sortiert (`?sort=`) |
+| `GET /api/findings/export` | Findings-Liste als CSV-Download (`text/csv`), optional gefiltert (`?status=`, `?min_amount=`, `?entity=`, `?review_status=`, `?finding_type=`, `?supplier=`) |
 | `POST /api/findings/:id/feedback` | `{"verdict": "confirmed"|"false_alarm"}` |
 | `GET /api/digest/weekly[.html]?entity=&cost_center=` | Wöchentlicher Digest als JSON/HTML inkl. Aufschlüsselung `by_entity`/`by_cost_center`/`by_supplier`, optional auf Gesellschaften und Kostenstellen gefiltert (UND-verknüpft) |
 | `POST /api/digest/weekly/send` | Digest aktiv per Webhook/SMTP zustellen (`{"entities": ["DE01"], "cost_centers": ["KST-100"]}`); Webhook-Payload enthält die Aufschlüsselung, liefert je Kanal `sent`/`skipped`/`error` |
@@ -182,22 +182,36 @@ begrenzen und umsortieren:
 | --- | --- | --- |
 | `limit` | maximale Anzahl Findings ab dem Offset | nicht-negative Ganzzahl |
 | `offset` | Anzahl der zu überspringenden Findings | nicht-negative Ganzzahl |
-| `sort` | Sortierung: `amount_desc` (Default), `amount_asc`, `created_at_desc`, `created_at_asc` | Whitelist |
+| `sort` | Sortierung: `amount_desc` (Default), `amount_asc`, `created_at_desc`, `created_at_asc`, `article_asc`/`article_desc`, `supplier_asc`/`supplier_desc` | Whitelist |
 | `review_status` | Rechnungs-Prüfstatus: `all` (Default), `open`, `reviewed` | Whitelist |
+| `finding_type` | Finding-Typ, wiederholbar (z. B. `missing_po`, `price_drift`, `price_deviation`); mehrere Werte ODER-verknüpft | Whitelist (`FINDING_LABELS`) |
+| `supplier` | Lieferant der zugehörigen Rechnung, wiederholbar; mehrere Werte ODER-verknüpft | Freitext (unbekannt → leeres Ergebnis) |
 
 Die Antwort enthält zusätzlich `limit` (effektiv), `offset` (effektiv), `sort`
-(effektiv), `count` (gelieferte Findings) und `total_count` (alle Treffer vor
-der Pagination). `total_amount` ist die Summe über die gelieferte Seite.
-Ungültige Werte — unbekanntes `sort`, negatives `limit`, nicht-ganzzahliges
-`offset` oder ein unbekannter `review_status` — liefern `400` mit einem
-JSON-Fehlerkörper.
+(effektiv), die effektiven Filterwerte `finding_types`/`suppliers` (`[]`, wenn
+nicht gesetzt), `count` (gelieferte Findings) und `total_count` (alle Treffer vor
+der Pagination, unter Berücksichtigung **aller** aktiven Filter inkl.
+`finding_type`/`supplier`). `total_amount` ist die Summe über die gelieferte
+Seite. Ungültige Werte — unbekanntes `sort`, unbekannter `finding_type`,
+negatives `limit`, nicht-ganzzahliges `offset` oder ein unbekannter
+`review_status` — liefern `400` mit einem JSON-Fehlerkörper; leere Filterwerte
+(`?finding_type=&supplier=`) sind ein No-op (`200`).
+
+`finding_type` und `supplier` sind jeweils in sich **ODER**-verknüpft und mit
+allen anderen Filtern (`status`, `review_status`, `entity`, `limit`/`offset`)
+**UND**-verknüpft. Die Artikel-Sortierungen (`article_asc`/`article_desc`) ordnen
+nach dem normalisierten Artikelnamen der zugehörigen Rechnungsposition; Findings
+ohne Position (`missing_po`, `duplicate`) erscheinen gebündelt unter
+`(ohne Position)` am Ende. Die Lieferant-Sortierungen ordnen nach `i.supplier`;
+bei Gleichstand entscheidet jeweils `f.id`.
 
 Der `review_status`-Filter setzt auf der **Rechnung** an, nicht auf dem
 einzelnen Finding: `open` liefert die Findings von Rechnungen mit mindestens
 einem Finding **ohne Feedback**, `reviewed` die Findings von Rechnungen, deren
 Findings **alle** ein Feedback haben; `all` (oder weglassen) filtert nicht.
 `count`/`total_count` berücksichtigen denselben Filter. Ohne neue Parameter
-bleibt die Antwort byte-identisch zur bisherigen.
+bleiben alle bestehenden Felder und die Reihenfolge (nach `amount_desc`)
+unverändert.
 
 ```sh
 # Zweite Seite à 5 Einträgen, nach Erstellungszeit aufsteigend
@@ -209,8 +223,15 @@ curl -sS 'http://localhost:8080/api/findings?review_status=open'
 # Nur Findings vollständig durchgesehener Rechnungen
 curl -sS 'http://localhost:8080/api/findings?review_status=reviewed'
 
+# Nur missing_po-Findings bei der ACME GmbH
+curl -sS 'http://localhost:8080/api/findings?finding_type=missing_po&supplier=ACME%20GmbH'
+
+# Preisabweichungen im Einkauf, gebündelt nach Artikel
+curl -sS 'http://localhost:8080/api/findings?finding_type=price_drift&sort=article_asc'
+
 # Unbekannter Wert -> 400
 curl -sS 'http://localhost:8080/api/findings?review_status=foo'
+curl -sS 'http://localhost:8080/api/findings?finding_type=bogus'
 ```
 
 ### Pagination und Sortierung der Rechnungs- und Regel-Listen
@@ -259,14 +280,20 @@ Rechnungen und Lieferanten-Regeln gibt es je eine Sortier-Auswahl, „Zurück“
 `count`/`total_count`; ohne Bedienung entsprechen die Anfragen den dokumentierten
 Defaults der Endpoints. Die Findings-Sektion bietet zusätzlich eine Auswahl
 „Prüfstatus“ (`Alle`/`Offen`/`Durchgesehen`), die als `review_status` mitgesendet
-wird. Die Findings-Liste behält dabei den bestehenden Finding-Filter
-`status=open` und kombiniert ihn per UND mit dem gewählten `review_status`;
-geprüfte Findings einer noch offenen Rechnung erscheinen also weiterhin nicht in
-der Sektion „Offene Auffälligkeiten“. Die Rechnungs-Sektion zeigt die Spalten „Findings offen“, „Offenes
+wird, sowie je eine Mehrfachauswahl **„Finding-Typ“** (Optionen aus
+`FINDING_LABELS`, gesendet als wiederholbares `finding_type=`) und **„Lieferant“**
+(Optionen aus `GET /api/suppliers`, gesendet als wiederholbares `supplier=`) und
+die neuen Sortierungen `article_asc`/`article_desc`/`supplier_asc`/`supplier_desc`.
+Die Findings-Liste behält dabei den bestehenden Finding-Filter `status=open` und
+kombiniert ihn per UND mit dem gewählten `review_status`, `finding_type` und
+`supplier`; geprüfte Findings einer noch offenen Rechnung erscheinen also
+weiterhin nicht in der Sektion „Offene Auffälligkeiten“. Der CSV-Export
+(`exportFindings`) reicht dieselben Filter an `GET /api/findings/export` weiter.
+Die Rechnungs-Sektion zeigt die Spalten „Findings offen“, „Offenes
 Volumen“ und „Status“ und bietet die Sortierungen `open_amount_desc` und
-`open_finding_count_desc`. Bei einem `400` (z. B. manipulierter `sort`- oder
-`review_status`-Wert) zeigt die Oberfläche eine sichtbare Fehlermeldung, ohne die
-zuletzt geladene Ansicht zu verwerfen.
+`open_finding_count_desc`. Bei einem `400` (z. B. manipulierter `sort`-,
+`review_status`- oder `finding_type`-Wert) zeigt die Oberfläche eine sichtbare
+Fehlermeldung, ohne die zuletzt geladene Ansicht zu verwerfen.
 
 ```sh
 # Zweite Seite à 10 Rechnungen, nach Rechnungsnummer aufsteigend

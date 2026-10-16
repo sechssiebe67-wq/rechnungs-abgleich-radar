@@ -87,6 +87,12 @@
           <option value="reviewed">Durchgesehen</option>
         </select>
       </label>
+      <label class="muted">Finding-Typ (Mehrfachauswahl)
+        <select id="findings-type-filter" multiple size="5" onchange="reloadList('findings')"></select>
+      </label>
+      <label class="muted">Lieferant (Mehrfachauswahl)
+        <select id="findings-supplier-filter" multiple size="4" onchange="reloadList('findings')"></select>
+      </label>
       <label class="muted">Sortierung <select id="findings-sort" onchange="setSort('findings', this.value)"></select></label>
       <span class="muted" id="findings-range">…</span>
       <button class="secondary" id="findings-prev" onclick="pageList('findings', -1)">Zurück</button>
@@ -289,8 +295,16 @@ function esc(s) {
 }
 
 const PAGE_SIZE = 25;
+const FINDING_LABELS = {
+  price_deviation: 'Preisabweichung',
+  quantity_deviation: 'Mengenabweichung',
+  missing_po: 'Fehlende Bestellreferenz',
+  duplicate: 'Duplikatverdacht',
+  price_drift: 'Preisdrift',
+};
 const LIST_SORTS = {
-  findings: ['amount_desc', 'amount_asc', 'created_at_desc', 'created_at_asc'],
+  findings: ['amount_desc', 'amount_asc', 'created_at_desc', 'created_at_asc',
+    'article_asc', 'article_desc', 'supplier_asc', 'supplier_desc'],
   invoices: ['created_at_desc', 'created_at_asc', 'invoice_number_asc', 'invoice_number_desc',
     'open_amount_desc', 'open_amount_asc', 'open_finding_count_desc', 'open_finding_count_asc'],
   rules: ['supplier_asc', 'supplier_desc', 'updated_at_desc', 'updated_at_asc'],
@@ -298,6 +312,7 @@ const LIST_SORTS = {
 const SORT_LABELS = {
   amount_desc: 'Betrag ↓', amount_asc: 'Betrag ↑',
   created_at_desc: 'Erstellt ↓', created_at_asc: 'Erstellt ↑',
+  article_asc: 'Artikel ↑', article_desc: 'Artikel ↓',
   invoice_number_asc: 'Rechnungsnr. ↑', invoice_number_desc: 'Rechnungsnr. ↓',
   open_amount_desc: 'Offenes Volumen ↓', open_amount_asc: 'Offenes Volumen ↑',
   open_finding_count_desc: 'Findings offen ↓', open_finding_count_asc: 'Findings offen ↑',
@@ -372,6 +387,7 @@ function pageList(prefix, delta) {
   return reloadList(prefix);
 }
 function initListControls() {
+  fillFindingTypeSelect();
   fillSortSelect('findings-sort', LIST_SORTS.findings, listState.findings.sort);
   fillSortSelect('invoices-sort', LIST_SORTS.invoices, listState.invoices.sort);
   fillSortSelect('rules-sort', LIST_SORTS.rules, listState.rules.sort);
@@ -533,8 +549,43 @@ function selectedReviewStatus() {
   const sel = document.getElementById('findings-review-status');
   return (sel && sel.value) || 'all';
 }
-function findingsFilters(reviewStatus, entities) {
-  return { status: 'open', review_status: reviewStatus, entity: entities };
+function fillFindingTypeSelect() {
+  const sel = document.getElementById('findings-type-filter');
+  if (!sel) return;
+  const previous = new Set(Array.from(sel.selectedOptions).map(o => o.value));
+  sel.innerHTML = Object.keys(FINDING_LABELS)
+    .map(t => `<option value="${esc(t)}">${esc(FINDING_LABELS[t])}</option>`).join('');
+  Array.from(sel.options).forEach(o => { if (previous.has(o.value)) o.selected = true; });
+}
+function selectedFindingTypes() {
+  const sel = document.getElementById('findings-type-filter');
+  if (!sel) return [];
+  return Array.from(sel.selectedOptions).map(o => o.value);
+}
+function selectedFindingSuppliers() {
+  const sel = document.getElementById('findings-supplier-filter');
+  if (!sel) return [];
+  return Array.from(sel.selectedOptions).map(o => o.value);
+}
+async function loadFindingSuppliers() {
+  try {
+    const d = await api('/api/suppliers');
+    const sel = document.getElementById('findings-supplier-filter');
+    if (!sel) return;
+    const previous = new Set(selectedFindingSuppliers());
+    sel.innerHTML = (d.suppliers || [])
+      .map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join('');
+    Array.from(sel.options).forEach(o => { if (previous.has(o.value)) o.selected = true; });
+  } catch (e) { /* Silently ignore; the empty select just applies no filter. */ }
+}
+function findingsFilters(reviewStatus, entities, findingTypes, suppliers) {
+  return {
+    status: 'open',
+    review_status: reviewStatus,
+    entity: entities,
+    finding_type: findingTypes || [],
+    supplier: suppliers || [],
+  };
 }
 function invoiceFilters(entities) {
   return { entity: entities };
@@ -544,6 +595,8 @@ function exportFindings() {
   const review = selectedReviewStatus();
   if (review && review !== 'all') parts.push('review_status=' + encodeURIComponent(review));
   selectedEntities().forEach(e => parts.push('entity=' + encodeURIComponent(e)));
+  selectedFindingTypes().forEach(t => parts.push('finding_type=' + encodeURIComponent(t)));
+  selectedFindingSuppliers().forEach(s => parts.push('supplier=' + encodeURIComponent(s)));
   window.location.href = '/api/findings/export?' + parts.join('&');
 }
 function exportInvoices() {
@@ -557,7 +610,7 @@ async function loadFindings() {
   const state = listState.findings;
   try {
     const d = await api('/api/findings' + buildListQuery(Object.assign({}, state, {
-      extra: findingsFilters(selectedReviewStatus(), selectedEntities()),
+      extra: findingsFilters(selectedReviewStatus(), selectedEntities(), selectedFindingTypes(), selectedFindingSuppliers()),
     })));
     showListError('findings', '');
     const rows = d.findings.map(f => `<tr>
@@ -896,6 +949,7 @@ async function reconcileAll() {
 async function refresh() {
   await loadEntities();
   await loadCostCenters();
+  await loadFindingSuppliers();
   await Promise.all([loadMetrics(), loadFindings(), loadInvoices(), loadReviewWorkload(), loadSupplierPrecision(), loadSupplierRules(), loadRuleImpact(), loadRoi(), loadRoiTimeseries(), loadDigest()]);
 }
 initListControls();
