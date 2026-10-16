@@ -1185,6 +1185,63 @@ class Store:
             },
         }
 
+    def review_workload_by_cost_center_timeseries(
+        self,
+        settings: Optional[Settings] = None,
+        months: Optional[int] = None,
+        entities: Optional[List[str]] = None,
+        cost_centers: Optional[List[str]] = None,
+        review_minutes: Optional[float] = None,
+        hourly_rate: Optional[float] = None,
+    ) -> dict:
+        """Open review load per (month, entity, cost center) over time.
+
+        Explicit cost-center axis on group level, answering for cost-center
+        controllers without a web UI *which cost center is accumulating backlog
+        over the months, and how much effort does it bind?* The endpoint follows
+        exactly the pattern of the existing review-workload time series — same
+        ROI assumptions, same ``top_invoice`` structure, same
+        ``totals``/``parameters`` fields and the same filter/validation
+        semantics.
+
+        Invoices are bucketed by ``strftime('%Y-%m', invoices.created_at)`` as
+        ``month``, ``invoices.entity`` and ``invoices.cost_center``; only
+        invoices with at least one still-open finding (``feedback IS NULL``)
+        enter the report. The per-invoice ``JOIN`` aggregate (no N+1) is exactly
+        the one used by :meth:`review_workload_timeseries`, but with ``entity``
+        **and** ``cost_center`` as grouping keys.
+
+        Each row carries ``month``, ``entity``, ``cost_center``,
+        ``invoice_count``, ``open_finding_count``, ``open_amount``, the bound
+        effort ``open_review_minutes``/``open_review_cost_eur`` and
+        ``top_invoice`` (largest ``open_amount``; ties: ``open_finding_count``
+        descending, then ``id`` ascending) with ``id``, ``invoice_number``,
+        ``supplier``, ``open_finding_count`` and ``open_amount``. Rows are
+        sorted by ``open_amount`` descending, then ``entity``, ``cost_center``
+        and ``month`` ascending. ``totals`` mirrors the row shape (``entity``
+        and ``cost_center`` are ``None``) and is the exact sum over the returned
+        rows; ``parameters`` echoes the effective assumptions.
+
+        The ``months`` window (default
+        :data:`DEFAULT_REVIEW_WORKLOAD_TIMESERIES_MONTHS`, must be ``>= 1``)
+        keeps only the newest ``months`` calendar months present in the filtered
+        data (anchor: newest month). ``entities``/``cost_centers`` restrict the
+        view like :meth:`list_invoices` (AND-combined); unknown values are not
+        an error and simply yield an empty ``rows`` list. ``review_minutes`` and
+        ``hourly_rate`` override the settings for what-if analyses.
+
+        This is a pure read extension that reuses the existing aggregation:
+        no new tables, columns or runtime dependencies.
+        """
+        return self.review_workload_timeseries(
+            settings,
+            months=months,
+            entities=entities,
+            cost_centers=cost_centers,
+            review_minutes=review_minutes,
+            hourly_rate=hourly_rate,
+        )
+
     def supplier_backlog_trend(
         self,
         settings: Optional[Settings] = None,
