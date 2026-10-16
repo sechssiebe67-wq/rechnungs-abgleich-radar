@@ -11,6 +11,25 @@ from .db import Store
 from .models import FINDING_LABELS
 
 
+def _empty_rollup_totals(*key_names: str) -> dict:
+    """Return a zeroed ``totals`` row for the given group keys."""
+    totals = {key_name: None for key_name in key_names}
+    totals.update(
+        {
+            "open_finding_count": 0,
+            "open_amount": 0.0,
+            "open_review_minutes": 0.0,
+            "open_review_cost_eur": 0.0,
+            "confirmed": 0,
+            "false_alarm": 0,
+            "precision": None,
+            "avoided_review_cost_eur": 0.0,
+            "avoided_mispayment_eur": 0.0,
+        }
+    )
+    return totals
+
+
 def empty_rollup(key_name: str = "entity") -> dict:
     """Return a well-formed, zeroed ``by_entity_rollup`` block.
 
@@ -18,24 +37,24 @@ def empty_rollup(key_name: str = "entity") -> dict:
     per-society rollup, ``supplier`` for the per-supplier rollup), so both blocks
     share one zeroed shape.
     """
-    totals = {
-        key_name: None,
-        "open_finding_count": 0,
-        "open_amount": 0.0,
-        "open_review_minutes": 0.0,
-        "open_review_cost_eur": 0.0,
-        "confirmed": 0,
-        "false_alarm": 0,
-        "precision": None,
-        "avoided_review_cost_eur": 0.0,
-        "avoided_mispayment_eur": 0.0,
-    }
-    return {"entities": [], "totals": totals}
+    return {"entities": [], "totals": _empty_rollup_totals(key_name)}
 
 
 def empty_supplier_rollup() -> dict:
     """Return a well-formed, zeroed ``by_supplier_rollup`` block."""
     return empty_rollup("supplier")
+
+
+def empty_cost_center_rollup() -> dict:
+    """Return a well-formed, zeroed ``by_cost_center_rollup`` block.
+
+    The block groups by ``(entity, cost_center)``, so its ``totals`` row carries
+    both keys set to ``None`` (unlike the single-key entity/supplier rollups).
+    """
+    return {
+        "cost_centers": [],
+        "totals": _empty_rollup_totals("entity", "cost_center"),
+    }
 
 
 def empty_supplier_backlog_trend() -> dict:
@@ -89,19 +108,25 @@ def weekly_digest(
     ``supplier``; empty values stay ``""`` and the group is kept.
 
     When ``rollup`` is true (the default) the response additionally carries the
-    consolidated management views ``by_entity_rollup`` and ``by_supplier_rollup``:
-    each is ``{"entities": [...], "totals": {...}}`` with, per society resp.
-    supplier, the open review workload (``open_finding_count``, ``open_amount``,
-    ``open_review_minutes``, ``open_review_cost_eur``) and the realized ROI
-    (``confirmed``, ``false_alarm``, ``precision``, ``avoided_review_cost_eur``,
+    consolidated management views ``by_entity_rollup``, ``by_supplier_rollup``
+    and ``by_cost_center_rollup``: each is ``{"entities": [...], "totals": {...}}``
+    (the cost-center block uses ``"cost_centers"`` as its list key) with, per
+    society resp. supplier resp. ``(entity, cost_center)`` pair, the open review
+    workload (``open_finding_count``, ``open_amount``, ``open_review_minutes``,
+    ``open_review_cost_eur``) and the realized ROI (``confirmed``,
+    ``false_alarm``, ``precision``, ``avoided_review_cost_eur``,
     ``avoided_mispayment_eur``), plus a ``totals`` row summing those fields over
     the reported groups. Unlike the count-only breakdown they span all invoices
     matching the filters (not just the digest ``limit``) so their ``open_amount``
     matches ``GET /api/stats``. ``by_supplier_rollup`` uses ``supplier`` as its
     group key and is sorted by ``open_amount`` descending, then
-    ``open_finding_count`` descending, then ``supplier`` ascending. Both blocks
-    are gated by the same ``rollup`` switch; passing ``rollup=False`` omits them
-    entirely to reproduce the pre-rollup payload.
+    ``open_finding_count`` descending, then ``supplier`` ascending.
+    ``by_cost_center_rollup`` groups by ``(entity, cost_center)`` (empty cost
+    centers stay ``""``) and is sorted by ``open_amount`` descending, then
+    ``entity`` ascending, then ``cost_center`` ascending; its ``totals`` row
+    carries ``entity is None`` and ``cost_center is None``. All blocks are gated
+    by the same ``rollup`` switch; passing ``rollup=False`` omits them entirely
+    to reproduce the pre-rollup payload.
 
     The same switch also gates ``by_supplier_backlog_trend``, the compact
     per-supplier time dimension derived from
@@ -140,6 +165,9 @@ def weekly_digest(
             settings, entities, cost_centers, review_minutes, hourly_rate
         )
         digest["by_supplier_rollup"] = store.supplier_rollup(
+            settings, entities, cost_centers, review_minutes, hourly_rate
+        )
+        digest["by_cost_center_rollup"] = store.cost_center_rollup(
             settings, entities, cost_centers, review_minutes, hourly_rate
         )
         digest["by_supplier_backlog_trend"] = store.supplier_backlog_trend(
@@ -349,6 +377,77 @@ def _supplier_rollup_html(digest: dict) -> str:
     )
 
 
+def _cost_center_rollup_html(digest: dict) -> str:
+    """Render the per-(society, cost-center) workload/ROI rollup with totals."""
+    rollup = digest.get("by_cost_center_rollup") or {}
+    rows = rollup.get("cost_centers") or []
+    totals = rollup.get("totals")
+    if not rows:
+        return ""
+
+    def _number(value):
+        if value is None:
+            return "n/a"
+        return "%.2f" % float(value)
+
+    def _precision(value):
+        if value is None:
+            return "n/a"
+        return "%.0f%%" % (float(value) * 100)
+
+    def _cost_center(row, is_total):
+        if is_total:
+            return "Gesamt"
+        return str(row.get("cost_center") or "")
+
+    body_rows = [(row, False) for row in rows]
+    if totals is not None:
+        body_rows.append((dict(totals, entity="Gesamt"), True))
+    cells: List[str] = []
+    for row, is_total in body_rows:
+        entity_label = html.escape(str(row.get("entity") or "Gesamt"))
+        if is_total:
+            entity_label = "<strong>%s</strong>" % entity_label
+        cells.append(
+            "<tr>"
+            "<td>{entity}</td>"
+            "<td>{cost_center}</td>"
+            "<td style='text-align:right'>{open_count}</td>"
+            "<td style='text-align:right'>{open_amount:.2f} EUR</td>"
+            "<td style='text-align:right'>{open_cost} EUR</td>"
+            "<td style='text-align:right'>{confirmed}</td>"
+            "<td style='text-align:right'>{false_alarm}</td>"
+            "<td style='text-align:right'>{precision}</td>"
+            "<td style='text-align:right'>{avoided_cost} EUR</td>"
+            "<td style='text-align:right'>{avoided_mis} EUR</td>"
+            "</tr>".format(
+                entity=entity_label,
+                cost_center=html.escape(_cost_center(row, is_total)),
+                open_count=int(row.get("open_finding_count", 0) or 0),
+                open_amount=float(row.get("open_amount", 0) or 0),
+                open_cost=_number(row.get("open_review_cost_eur")),
+                confirmed=int(row.get("confirmed", 0) or 0),
+                false_alarm=int(row.get("false_alarm", 0) or 0),
+                precision=_precision(row.get("precision")),
+                avoided_cost=_number(row.get("avoided_review_cost_eur")),
+                avoided_mis=_number(row.get("avoided_mispayment_eur")),
+            )
+        )
+    header = (
+        "<tr><th>Gesellschaft</th><th>Kostenstelle</th><th>Offene Findings</th>"
+        "<th>Offenes Volumen</th><th>Offener Aufwand (EUR)</th><th>Bestätigt</th>"
+        "<th>Fehlalarm</th><th>Precision</th><th>Vermiedener Aufwand (EUR)</th>"
+        "<th>Vermiedene Fehlzahlung (EUR)</th></tr>"
+    )
+    return (
+        "<h3>Kostenstellen-Rollup (offene Last und ROI je Gesellschaft und "
+        "Kostenstelle)</h3>\n"
+        "<table border=\"1\" cellpadding=\"6\" cellspacing=\"0\" width=\"100%%\">\n"
+        "<thead>%s</thead>\n<tbody>\n%s\n</tbody></table>"
+        % (header, "\n".join(cells))
+    )
+
+
 def _top_invoice_label(invoice: Optional[dict]) -> str:
     """Render a short, escaped label for a ``top_invoice`` (or ``—``)."""
     if not invoice:
@@ -449,6 +548,7 @@ def render_html(digest: dict) -> str:
     breakdown = _breakdown_html(digest)
     rollup = _rollup_html(digest)
     supplier_rollup = _supplier_rollup_html(digest)
+    cost_center_rollup = _cost_center_rollup_html(digest)
     backlog_trend = _supplier_backlog_trend_html(digest)
     return """<!doctype html>
 <html lang="de">
@@ -463,6 +563,7 @@ def render_html(digest: dict) -> str:
 {precision}</p>
 {rollup}
 {supplier_rollup}
+{cost_center_rollup}
 {backlog_trend}
 {breakdown}
 <table border="1" cellpadding="6" cellspacing="0" width="100%">
@@ -484,6 +585,7 @@ Rechnungs-Abgleich-Radar. Zahlungsausführung ist nicht Teil dieses Systems.</p>
         precision=precision_text,
         rollup=rollup,
         supplier_rollup=supplier_rollup,
+        cost_center_rollup=cost_center_rollup,
         backlog_trend=backlog_trend,
         breakdown=breakdown,
         body=body,

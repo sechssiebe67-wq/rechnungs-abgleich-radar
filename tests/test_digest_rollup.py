@@ -432,6 +432,8 @@ class DigestRollupApiTests(ApiTestCase):
         self.assertTrue(rollup["entities"])
         supplier_rollup = full.pop("by_supplier_rollup")
         self.assertTrue(supplier_rollup["entities"])
+        cost_center_rollup = full.pop("by_cost_center_rollup")
+        self.assertTrue(cost_center_rollup["cost_centers"])
         backlog_trend = full.pop("by_supplier_backlog_trend")
         self.assertTrue(backlog_trend["suppliers"])
         # The remaining payload is byte-compatible with the pre-change response.
