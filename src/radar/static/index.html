@@ -133,6 +133,33 @@
   </section>
 
   <section>
+    <h2>Prüf-Last-Zeitreihe <span class="muted">(offene Prüflast je Monat, Gesellschaft und Kostenstelle)</span></h2>
+    <p class="muted">Zeigt, wie sich die offene Prüflast über die letzten Monate entwickelt und welche Gesellschaft/Kostenstelle Rückstand aufbaut — inklusive der Rechnung mit dem größten offenen Volumen.</p>
+    <div class="controls">
+      <label class="muted">Monate
+        <select id="review-workload-timeseries-months" onchange="loadReviewWorkloadTimeseries()">
+          <option value="3">3 Monate</option>
+          <option value="6" selected>6 Monate</option>
+          <option value="12">12 Monate</option>
+          <option value="24">24 Monate</option>
+        </select>
+      </label>
+      <label class="muted">Gesellschaft (Mehrfachauswahl)
+        <select id="review-workload-ts-entity-filter" multiple size="3" onchange="loadReviewWorkloadTimeseries()"></select>
+      </label>
+      <label class="muted">Kostenstelle (Mehrfachauswahl)
+        <select id="review-workload-ts-cost-center-filter" multiple size="3" onchange="loadReviewWorkloadTimeseries()"></select>
+      </label>
+      <span class="error" id="review-workload-timeseries-error"></span>
+    </div>
+    <p class="muted" id="review-workload-timeseries-hint">Lade …</p>
+    <table id="review-workload-timeseries-table" style="margin-top:.5rem">
+      <thead><tr><th>Monat</th><th>Gesellschaft</th><th>Kostenstelle</th><th class="amount">Rechnungen</th><th class="amount">Offene Findings</th><th class="amount">Offenes Volumen</th><th class="amount">Aufwand (min)</th><th class="amount">Aufwand (EUR)</th><th>Top-Rechnung</th></tr></thead>
+      <tbody id="review-workload-timeseries"></tbody>
+    </table>
+  </section>
+
+  <section>
     <h2>Rechnungs-Audit <span class="muted">(Findings gruppiert nach Artikel und Position)</span></h2>
     <p class="muted">Zeigt je Rechnung, welche Artikel und Positionen das Abweichungsvolumen treiben.</p>
     <div class="controls">
@@ -465,6 +492,7 @@ async function loadEntities() {
   const d = await api('/api/entities');
   fillEntitySelect('entity-filter', d.entities, new Set(selectedEntities()));
   fillEntitySelect('kpi-entity-filter', d.entities, new Set(selectedKpiEntities()));
+  fillEntitySelect('review-workload-ts-entity-filter', d.entities, new Set(selectedReviewWorkloadEntities()));
 }
 function selectedCostCenters() {
   const sel = document.getElementById('cost-center-filter');
@@ -488,6 +516,7 @@ async function loadCostCenters() {
   fillCostCenterSelect('cost-center-filter', d.cost_centers, new Set(selectedCostCenters()));
   fillCostCenterSelect('digest-cost-center-filter', d.cost_centers, new Set(selectedDigestCostCenters()));
   fillCostCenterSelect('kpi-cost-center-filter', d.cost_centers, new Set(selectedKpiCostCenters()));
+  fillCostCenterSelect('review-workload-ts-cost-center-filter', d.cost_centers, new Set(selectedReviewWorkloadCostCenters()));
 }
 function digestQuery() {
   const parts = [];
@@ -630,6 +659,73 @@ async function loadReviewWorkload() {
       <td class="amount">${money(i.open_amount)}</td>
       <td class="amount">${money(i.open_review_cost_eur)}</td>
     </tr>`).join('');
+  } catch (e) {
+    if (errorEl) errorEl.textContent = 'Fehler: ' + e.message;
+  }
+}
+function selectedReviewWorkloadEntities() {
+  const sel = document.getElementById('review-workload-ts-entity-filter');
+  if (!sel) return [];
+  return Array.from(sel.selectedOptions).map(o => o.value);
+}
+function selectedReviewWorkloadCostCenters() {
+  const sel = document.getElementById('review-workload-ts-cost-center-filter');
+  if (!sel) return [];
+  return Array.from(sel.selectedOptions).map(o => o.value);
+}
+function reviewWorkloadTimeseriesQuery() {
+  const monthsEl = document.getElementById('review-workload-timeseries-months');
+  const parts = ['months=' + encodeURIComponent(monthsEl ? monthsEl.value : '6')];
+  selectedReviewWorkloadEntities().forEach(e => parts.push('entity=' + encodeURIComponent(e)));
+  selectedReviewWorkloadCostCenters().forEach(c => parts.push('cost_center=' + encodeURIComponent(c)));
+  return '?' + parts.join('&');
+}
+function topInvoiceLabel(topInvoice) {
+  if (!topInvoice) return '—';
+  return topInvoice.invoice_number + ' · ' + money(topInvoice.open_amount);
+}
+async function loadReviewWorkloadTimeseries() {
+  const errorEl = document.getElementById('review-workload-timeseries-error');
+  const hint = document.getElementById('review-workload-timeseries-hint');
+  const table = document.getElementById('review-workload-timeseries-table');
+  const tbody = document.getElementById('review-workload-timeseries');
+  if (!tbody) return;
+  try {
+    const d = await api('/api/review-workload/timeseries' + reviewWorkloadTimeseriesQuery());
+    if (errorEl) errorEl.textContent = '';
+    const rows = d.rows || [];
+    if (!rows.length) {
+      hint.textContent = 'Keine offene Prüflast im gewählten Zeitraum bzw. für die gewählten Filter.';
+      table.style.display = 'none';
+      tbody.innerHTML = '';
+      return;
+    }
+    hint.textContent = '';
+    table.style.display = '';
+    const html = rows.map(r => `<tr>
+      <td>${esc(r.month)}</td>
+      <td>${esc(r.entity)}</td>
+      <td>${esc(r.cost_center || '—')}</td>
+      <td class="amount">${esc(r.invoice_count)}</td>
+      <td class="amount">${esc(r.open_finding_count)}</td>
+      <td class="amount">${money(r.open_amount)}</td>
+      <td class="amount">${esc(r.open_review_minutes)}</td>
+      <td class="amount">${money(r.open_review_cost_eur)}</td>
+      <td>${esc(topInvoiceLabel(r.top_invoice))}</td>
+    </tr>`);
+    const t = d.totals || {};
+    html.push(`<tr class="total-row">
+      <td><strong>Summe</strong></td>
+      <td>—</td>
+      <td>—</td>
+      <td class="amount">${esc(t.invoice_count)}</td>
+      <td class="amount">${esc(t.open_finding_count)}</td>
+      <td class="amount">${money(t.open_amount)}</td>
+      <td class="amount">${esc(t.open_review_minutes)}</td>
+      <td class="amount">${money(t.open_review_cost_eur)}</td>
+      <td>${esc(topInvoiceLabel(t.top_invoice))}</td>
+    </tr>`);
+    tbody.innerHTML = html.join('');
   } catch (e) {
     if (errorEl) errorEl.textContent = 'Fehler: ' + e.message;
   }
@@ -896,7 +992,7 @@ async function reconcileAll() {
 async function refresh() {
   await loadEntities();
   await loadCostCenters();
-  await Promise.all([loadMetrics(), loadFindings(), loadInvoices(), loadReviewWorkload(), loadSupplierPrecision(), loadSupplierRules(), loadRuleImpact(), loadRoi(), loadRoiTimeseries(), loadDigest()]);
+  await Promise.all([loadMetrics(), loadFindings(), loadInvoices(), loadReviewWorkload(), loadSupplierPrecision(), loadSupplierRules(), loadRuleImpact(), loadRoi(), loadRoiTimeseries(), loadReviewWorkloadTimeseries(), loadDigest()]);
 }
 initListControls();
 loadHealth(); refresh();
