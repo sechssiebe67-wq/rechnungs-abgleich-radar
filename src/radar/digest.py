@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 from .config import Settings
-from .db import Store
+from .db import DEFAULT_COST_CENTER_BACKLOG_TREND_MONTHS, Store
 from .models import FINDING_LABELS
 
 
@@ -74,6 +74,32 @@ def empty_supplier_backlog_trend() -> dict:
     return {"suppliers": [], "totals": totals}
 
 
+def empty_cost_center_backlog_trend() -> dict:
+    """Return a well-formed, zeroed ``by_cost_center_backlog_trend`` block."""
+    totals = {
+        "entity": None,
+        "cost_center": None,
+        "latest_month": None,
+        "latest_open_amount": 0.0,
+        "previous_month": None,
+        "previous_open_amount": 0.0,
+        "delta_open_amount": 0.0,
+        "open_review_minutes": 0.0,
+        "open_review_cost_eur": 0.0,
+        "top_invoice": None,
+    }
+    defaults = Settings()
+    return {
+        "cost_centers": [],
+        "totals": totals,
+        "parameters": {
+            "months": DEFAULT_COST_CENTER_BACKLOG_TREND_MONTHS,
+            "review_minutes_per_finding": defaults.review_minutes_per_finding,
+            "review_hourly_rate_eur": defaults.review_hourly_rate_eur,
+        },
+    }
+
+
 def weekly_digest(
     store: Store,
     limit: int = 100,
@@ -131,8 +157,11 @@ def weekly_digest(
     The same switch also gates ``by_supplier_backlog_trend``, the compact
     per-supplier time dimension derived from
     :meth:`Store.supplier_backlog_trend` (newest month vs. the previous month,
-    ``delta_open_amount``, bound effort and the concentrating ``top_invoice``).
-    ``trend_months`` forwards the look-back window (default ``2``, ``>= 2``).
+    ``delta_open_amount``, bound effort and the concentrating ``top_invoice``),
+    and its cost-center counterpart ``by_cost_center_backlog_trend`` (derived
+    from :meth:`Store.cost_center_backlog_trend`, grouped by
+    ``(entity, cost_center)``). ``trend_months`` forwards the look-back window
+    (default ``2``, ``>= 2``).
     """
     findings = store.list_findings(
         status="open", entities=entities, cost_centers=cost_centers
@@ -177,6 +206,14 @@ def weekly_digest(
             review_minutes,
             hourly_rate,
             trend_months,
+        )
+        digest["by_cost_center_backlog_trend"] = store.cost_center_backlog_trend(
+            settings,
+            months=trend_months,
+            entities=entities,
+            cost_centers=cost_centers,
+            review_minutes=review_minutes,
+            hourly_rate=hourly_rate,
         )
     return digest
 
@@ -509,6 +546,62 @@ def _supplier_backlog_trend_html(digest: dict) -> str:
     )
 
 
+def _cost_center_backlog_trend_html(digest: dict) -> str:
+    """Render the per-(society, cost-center) backlog trend with a totals row."""
+    block = digest.get("by_cost_center_backlog_trend") or {}
+    rows = block.get("cost_centers") or []
+    totals = block.get("totals")
+    if not rows:
+        return ""
+
+    def _number(value):
+        if value is None:
+            return "n/a"
+        return "%.2f" % float(value)
+
+    def _group_label(row, is_total):
+        if is_total:
+            return "Gesamt"
+        entity = str(row.get("entity") or "")
+        cost_center = str(row.get("cost_center") or "")
+        return "%s · %s" % (entity, cost_center) if cost_center else entity
+
+    body_rows = [(row, False) for row in rows]
+    if totals is not None:
+        body_rows.append((dict(totals, entity="Gesamt"), True))
+    cells: List[str] = []
+    for row, is_total in body_rows:
+        label = html.escape(_group_label(row, is_total))
+        if is_total:
+            label = "<strong>%s</strong>" % label
+        cells.append(
+            "<tr>"
+            "<td>{group}</td>"
+            "<td>{latest_month}</td>"
+            "<td style='text-align:right'>{delta:.2f} EUR</td>"
+            "<td style='text-align:right'>{cost} EUR</td>"
+            "<td>{top_invoice}</td>"
+            "</tr>".format(
+                group=label,
+                latest_month=html.escape(str(row.get("latest_month") or "—")),
+                delta=float(row.get("delta_open_amount", 0) or 0),
+                cost=_number(row.get("open_review_cost_eur")),
+                top_invoice=_top_invoice_label(row.get("top_invoice")),
+            )
+        )
+    header = (
+        "<tr><th>Gesellschaft · Kostenstelle</th><th>Neuester Monat</th>"
+        "<th>Delta offenes Volumen</th><th>Offener Aufwand (EUR)</th>"
+        "<th>Top-Rechnung</th></tr>"
+    )
+    return (
+        "<h3>Kostenstellen-Backlog-Trend (neuester Monat vs. Vormonat)</h3>\n"
+        "<table border=\"1\" cellpadding=\"6\" cellspacing=\"0\" width=\"100%%\">\n"
+        "<thead>%s</thead>\n<tbody>\n%s\n</tbody></table>"
+        % (header, "\n".join(cells))
+    )
+
+
 def render_html(digest: dict) -> str:
     rows: List[str] = []
     for finding in digest["findings"]:
@@ -550,6 +643,7 @@ def render_html(digest: dict) -> str:
     supplier_rollup = _supplier_rollup_html(digest)
     cost_center_rollup = _cost_center_rollup_html(digest)
     backlog_trend = _supplier_backlog_trend_html(digest)
+    cost_center_backlog_trend = _cost_center_backlog_trend_html(digest)
     return """<!doctype html>
 <html lang="de">
 <head><meta charset="utf-8"><title>Rechnungs-Abgleich-Radar — Wochen-Digest</title></head>
@@ -565,6 +659,7 @@ def render_html(digest: dict) -> str:
 {supplier_rollup}
 {cost_center_rollup}
 {backlog_trend}
+{cost_center_backlog_trend}
 {breakdown}
 <table border="1" cellpadding="6" cellspacing="0" width="100%">
 <thead><tr><th>Gesellschaft</th><th>Art</th><th>Begründung</th><th>Betrag</th><th>Referenz</th></tr></thead>
@@ -587,6 +682,7 @@ Rechnungs-Abgleich-Radar. Zahlungsausführung ist nicht Teil dieses Systems.</p>
         supplier_rollup=supplier_rollup,
         cost_center_rollup=cost_center_rollup,
         backlog_trend=backlog_trend,
+        cost_center_backlog_trend=cost_center_backlog_trend,
         breakdown=breakdown,
         body=body,
     )
