@@ -24,7 +24,10 @@ melden, zeigt eine einzige Montags-Nachricht **je Gesellschaft** sowohl die
 ROI** (was das Radar bereits gespart hat) plus eine **Konzern-Summenzeile** — so
 beantwortet der Digest die Frage „Wo steht der Konzern, und welche Gesellschaft
 braucht als Nächstes Aufmerksamkeit?“, ohne dass die Weboberfläche geöffnet
-werden muss.
+werden muss. Für den **Einkauf** als sekundärem Konsumenten trägt derselbe Digest
+zusätzlich eine **Lieferanten-Sicht** (`by_supplier_rollup`), die die exakt
+gleiche Frage — offene Prüflast plus realisierter ROI — **je Lieferant**
+beantwortet und mit einer `totals`-Summenzeile abschließt.
 
 Der **ROI-Nachweis** (`GET /api/stats/roi`) macht diesen Nutzen für den Preistest
 in Euro greifbar: Er rechnet bestätigte Treffer in vermiedenen Prüfaufwand und
@@ -74,6 +77,10 @@ den größten Teil davon bindet. Der **Einkauf** als sekundärer Konsument nutzt
 `(Monat, Lieferant)` zu beantworten: *Welcher Lieferant baut über die Monate
 Rückstand auf, und wie viel Aufwand bindet er?* Damit lässt sich die offene
 Prüflast direkt je Lieferant ansprechen, ohne die Liste manuell zu filtern.
+Zusätzlich liefert der **Wochen-Digest** diese Sicht als Block
+`by_supplier_rollup` direkt mit: offene Prüflast und realisierter ROI je
+Lieferant plus `totals`-Summenzeile — so beantwortet bereits die Montags-Nachricht
+die Einkaufs-Frage nach der höchsten offenen Prüflast je Lieferant.
 Bei der Abarbeitung des Wochen-Digests und der
 Findings-Liste arbeiten sie zuerst die Rechnungen mit dem **größten offenen
 Prüfvolumen** ab (viele offene Findings bzw. hoher offener Betrag), weil dort pro
@@ -529,6 +536,30 @@ persistentem Speicher.
     byte-identisch zum bisherigen Digest. JSON, HTML-Tabelle, Webhook-Payload
     und Weboberfläche zeigen den Rollup standardmäßig. Reine Lese-Erweiterung:
     keine neuen Tabellen, Spalten oder Laufzeit-Abhängigkeiten.
+- **Lieferanten-Rollup im Wochen-Digest** (`by_supplier_rollup`): Für den
+  **Einkauf** als sekundärem Konsumenten trägt derselbe Digest zusätzlich
+  dieselbe konsolidierte Sicht **je Lieferant** und beantwortet damit ohne
+  Web-UI: *Welcher Lieferant bindet aktuell die meiste offene Prüflast, und wie
+  hat er sich gegenüber dem letzten Digest entwickelt?*
+  - Je Lieferant exakt die Felder `supplier`, `open_finding_count`,
+    `open_amount`, `open_review_minutes`, `open_review_cost_eur`, `confirmed`,
+    `false_alarm`, `precision`, `avoided_review_cost_eur` und
+    `avoided_mispayment_eur` — dieselbe Feldstruktur wie `by_entity_rollup`
+    (`ROLLUP_FIELDS` in `src/radar/db.py`) mit `supplier` statt `entity`.
+  - Sortierung deterministisch: absteigend nach `open_amount`, bei Gleichstand
+    absteigend nach `open_finding_count`, dann aufsteigend nach `supplier`.
+    `totals` trägt dieselben Felder mit `supplier == None` und summiert exakt
+    die gelieferten Zeilen; `precision` wird aus den aggregierten Zählern neu
+    berechnet (nie gemittelt).
+  - Der Block berücksichtigt dieselben `?entity=`/`?cost_center=`-Filter
+    (UND-verknüpft) und ROI-Annahmen (`?review_minutes=`/`?hourly_rate=`) wie
+    `by_entity_rollup` und aggregiert über dieselbe Rechnungsmenge.
+  - Über denselben Schalter `?rollup=false` werden `by_entity_rollup` und
+    `by_supplier_rollup` **gemeinsam** weggelassen; ohne Angabe liefert der
+    Digest beide. JSON und die HTML-Tabelle „Lieferanten-Rollup“ inkl.
+    Summenzeile zeigen den Block standardmäßig. Rein additive,
+    rückwärtskompatible Erweiterung: keine neuen Tabellen, Spalten, Endpunkte
+    oder Laufzeit-Abhängigkeiten.
 - **Digest-Versand per Webhook und SMTP** (`radar/notify.py`)
   - Aktive Zustellung des Wochen-Digests statt manuellem Abruf.
   - **Webhook** (Slack-/Mattermost-kompatibles JSON mit Gesamtbetrag, Anzahl
@@ -717,11 +748,13 @@ priorisiert die Freigabe-Entscheidung.
     `top_invoice`, `totals` und `parameters` sowie den Filtern
     `?months=`/`?entity=`/`?cost_center=` (UND-verknüpft) und den
     What-if-Annahmen `?review_minutes=`/`?hourly_rate=`. Die Weboberfläche zeigt
-    die Sektion „Prüf-Last je Lieferant (Zeitreihe)“. **Nächster sinnvoller
-    Schritt:** ein **Lieferanten-Digest**, der die steigende offene Prüflast je
+    die Sektion „Prüf-Last je Lieferant (Zeitreihe)“. **Umgesetzt (Teil):** Der
+    **Wochen-Digest** trägt mit `by_supplier_rollup` die offene Last **und** den
+    realisierten ROI je Lieferant plus `totals`-Summenzeile und beantwortet damit
+    die Einkaufs-Frage ohne separaten Abruf. **Nächster sinnvoller Schritt:** ein
+    eigenständiger **Lieferanten-Digest**, der die steigende offene Prüflast je
     Lieferant über die Monate zusammenfasst und aktiv an den Einkauf zustellt
-    (Webhook/SMTP), damit die operative Ansprache ohne manuellen Abruf
-    auskommt.
+    (Webhook/SMTP), damit die operative Ansprache ohne manuellen Abruf auskommt.
 
 ## Validation plan (Bezug zur Produkthypothese)
 
@@ -786,8 +819,12 @@ offene Prüflast (offene Findings, offenes Volumen, offener Aufwand in Minuten u
 EUR) und realisierter ROI (bestätigt/Fehlalarm, Precision, vermiedener Aufwand,
 vermiedene Fehlzahlung) nebeneinander, abgeschlossen durch eine `totals`-Zeile
 über den Konzern. So beantwortet die Montags-Mail ohne Web-UI, wo der Konzern
-steht und welche Gesellschaft als Nächstes Aufmerksamkeit braucht; über
-`?rollup=false` bleibt der bisherige Digest unverändert abrufbar. So misst der
+steht und welche Gesellschaft als Nächstes Aufmerksamkeit braucht; der
+**Lieferanten-Rollup** (`by_supplier_rollup`) ergänzt dieselbe Sicht je Lieferant
+für den Einkauf — offene Last, realisierter ROI und `totals`-Summenzeile —,
+sodass die Montags-Mail zusätzlich „welcher Lieferant bindet aktuell die meiste
+offene Prüflast?“ direkt beantwortet. Über `?rollup=false` bleiben beide Rollups
+gemeinsam entfernbar und der bisherige Digest unverändert abrufbar. So misst der
 Test die tatsächliche Nutzung und die Precision weiterhin über das Feedback in
 der Oberfläche.
 

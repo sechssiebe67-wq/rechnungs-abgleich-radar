@@ -430,6 +430,8 @@ class DigestRollupApiTests(ApiTestCase):
         full = json.loads(raw_true)
         rollup = full.pop("by_entity_rollup")
         self.assertTrue(rollup["entities"])
+        supplier_rollup = full.pop("by_supplier_rollup")
+        self.assertTrue(supplier_rollup["entities"])
         # The remaining payload is byte-compatible with the pre-change response.
         payload.pop("generated_at")
         full.pop("generated_at")
