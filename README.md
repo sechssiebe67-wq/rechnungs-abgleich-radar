@@ -84,7 +84,7 @@ python3 -m unittest discover -s tests -v
 | `GET /api/review-workload` | Top-Liste der Rechnungen mit offenen Findings absteigend nach offenem Volumen, inkl. geschätztem Prüfaufwand (`open_review_minutes`, `open_review_cost_eur`); optional `?limit=` (Default 25), `?entity=`, `?cost_center=` (mehrfach, UND-verknüpft) |
 | `GET /api/review-workload/timeseries` | Zeitreihe der offenen Prüflast je `(Monat, Gesellschaft, Kostenstelle)` inkl. `top_invoice` (Rechnung mit dem größten offenen Volumen), `totals` und `parameters`; optional `?months=` (Default 6), `?entity=`, `?cost_center=`, `?review_minutes=`, `?hourly_rate=` |
 | `GET /api/review-workload/by-supplier/timeseries` | Zeitreihe der offenen Prüflast je `(Monat, Lieferant)` inkl. `top_invoice` (Rechnung mit dem größten offenen Volumen), `totals` und `parameters`; optional `?months=` (Default 6), `?entity=`, `?cost_center=`, `?review_minutes=`, `?hourly_rate=` |
-| `GET /api/review-workload/by-cost-center/timeseries` | Zeitreihe der offenen Prüflast je `(Monat, Gesellschaft, Kostenstelle)` inkl. `top_invoice` (Rechnung mit dem größten offenen Volumen), `totals` und `parameters`; optional `?months=` (Default 6), `?entity=`, `?cost_center=`, `?review_minutes=`, `?hourly_rate=` |
+| `GET /api/review-workload/by-cost-center/timeseries` | Zeitreihe der offenen Prüflast je `(Monat, Kostenstelle)` über alle Gesellschaften aggregiert, inkl. `top_invoice` (Rechnung mit dem größten offenen Volumen), `totals` und `parameters`; optional `?months=` (Default 6), `?entity=`, `?cost_center=`, `?review_minutes=`, `?hourly_rate=` |
 | `POST /api/reconcile` | Alle Rechnungen (oder `{"invoice_id": …}`) neu abgleichen |
 | `GET /api/findings?status=open&min_amount=&entity=` | Priorisierte Auffälligkeiten; optional nach Rechnungs-Prüfstatus gefiltert (`?review_status=open\|reviewed\|all`), seitenweise (`?limit=`, `?offset=`) und sortiert (`?sort=`) |
 | `GET /api/findings/export` | Findings-Liste als CSV-Download (`text/csv`), optional gefiltert (`?status=`, `?min_amount=`, `?entity=`, `?review_status=`) |
@@ -657,33 +657,37 @@ Kostenstelle baut über die Monate Rückstand auf, und wie viel Aufwand bindet
 sie?** Der Endpoint folgt exakt dem Muster von
 `/api/review-workload/timeseries` (gleiche ROI-Annahmen, gleiche
 `top_invoice`-Struktur, gleiche `totals`/`parameters`-Felder, gleiche Filter-
-und Validierungssemantik) und nutzt ausschließlich die bestehenden Tabellen —
-keine neuen Tabellen, Spalten oder Laufzeit-Abhängigkeiten. Gruppiert wird je
-`strftime('%Y-%m', invoices.created_at)` (Monat), `invoices.entity` und
-`invoices.cost_center`; nur Rechnungen mit mindestens einem offenen Finding
-gehen ein.
+und Validierungssemantik), unterscheidet sich aber in der Gruppierung: Anders als
+`/api/review-workload/timeseries`, das die Gesellschaft im Bucket-Schlüssel
+behält, wird hier über **alle Gesellschaften aggregiert**. Gruppiert wird je
+`strftime('%Y-%m', invoices.created_at)` (Monat) und `invoices.cost_center`;
+andere Gesellschaften mit derselben Kostenstelle landen also im selben Bucket.
+Nur Rechnungen mit mindestens einem offenen Finding gehen ein. Der Endpoint nutzt
+ausschließlich die bestehenden Tabellen — keine neuen Tabellen, Spalten oder
+Laufzeit-Abhängigkeiten.
 
 Jede Zeile liefert:
 
 | Feld | Bedeutung |
 | --- | --- |
 | `month` | Kalendermonat `YYYY-MM` (aus `invoices.created_at`) |
-| `entity` | Gesellschaft (`default`, wenn keine gesetzt) |
-| `cost_center` | Kostenstelle (`""`, wenn keine gesetzt) |
+| `cost_center` | Kostenstelle (`""`, wenn keine gesetzt), über alle Gesellschaften aggregiert |
 | `invoice_count` | Rechnungen mit mindestens einem offenen Finding |
 | `open_finding_count` | offene Findings im Bucket |
 | `open_amount` | Summe der Beträge offener Findings (EUR) |
 | `open_review_minutes` | `open_finding_count × review_minutes_per_finding` |
 | `open_review_cost_eur` | `open_review_minutes / 60 × hourly_rate`, auf zwei Nachkommastellen |
-| `top_invoice` | Rechnung mit dem größten `open_amount` im Bucket (`id`, `invoice_number`, `supplier`, `open_finding_count`, `open_amount`) oder `null` |
+| `top_invoice` | Rechnung mit dem größten `open_amount` im Bucket (`id`, `invoice_number`, `supplier`, `entity`, `open_finding_count`, `open_amount`) oder `null` |
 
 Die Zeilen sind absteigend nach `open_amount`, bei Gleichstand aufsteigend nach
-`entity`, `cost_center`, `month` sortiert (deterministisch). `totals` trägt
-dieselbe Feldstruktur (`entity == null`, `cost_center == null`) und ist die
-exakte Summe über die gelieferten Zeilen (`top_invoice` = die global größte
-Rechnung). `parameters` weist die wirksamen Annahmen `months`,
-`review_minutes_per_finding` und `review_hourly_rate_eur` aus. Die Werte
-entsprechen exakt der bestehenden Prüf-Last-Zeitreihe für denselben Filter.
+`cost_center`, `month` sortiert (deterministisch). `totals` trägt dieselbe
+Feldstruktur (`cost_center == null`) und ist die exakte Summe über die
+gelieferten Zeilen (`top_invoice` = die global größte Rechnung). `parameters`
+weist die wirksamen Annahmen `months`, `review_minutes_per_finding` und
+`review_hourly_rate_eur` aus. Da über Gesellschaften aggregiert wird, ist die
+Summe über alle Kostenstellen für einen Monat gleich der Summe der
+`/api/review-workload/timeseries`-Zeilen desselben Monats — die Einzelzeilen
+unterscheiden sich aber, weil dort nach Gesellschaft aufgeteilt wird.
 
 | Parameter | Bedeutung | Validierung |
 | --- | --- | --- |
@@ -711,7 +715,6 @@ curl -sS 'http://localhost:8080/api/review-workload/by-cost-center/timeseries?re
   "rows": [
     {
       "month": "2026-01",
-      "entity": "DE01",
       "cost_center": "KST-100",
       "invoice_count": 2,
       "open_finding_count": 3,
@@ -722,6 +725,7 @@ curl -sS 'http://localhost:8080/api/review-workload/by-cost-center/timeseries?re
         "id": 42,
         "invoice_number": "RE-1001",
         "supplier": "ACME GmbH",
+        "entity": "DE01",
         "open_finding_count": 1,
         "open_amount": 50.0
       }
@@ -730,7 +734,6 @@ curl -sS 'http://localhost:8080/api/review-workload/by-cost-center/timeseries?re
   "count": 1,
   "totals": {
     "month": null,
-    "entity": null,
     "cost_center": null,
     "invoice_count": 2,
     "open_finding_count": 3,
@@ -741,6 +744,7 @@ curl -sS 'http://localhost:8080/api/review-workload/by-cost-center/timeseries?re
       "id": 42,
       "invoice_number": "RE-1001",
       "supplier": "ACME GmbH",
+      "entity": "DE01",
       "open_finding_count": 1,
       "open_amount": 50.0
     }
@@ -755,7 +759,7 @@ curl -sS 'http://localhost:8080/api/review-workload/by-cost-center/timeseries?re
 
 Die Web-Oberfläche zeigt die Sektion „Prüf-Last je Kostenstelle (Zeitreihe)“ mit
 einem Monats-Selektor (3/6/12/24 Monate), Gesellschafts- und
-Kostenstellen-Mehrfachauswahl sowie der Tabelle `Monat`, `Gesellschaft`,
+Kostenstellen-Mehrfachauswahl sowie der Tabelle `Monat`,
 `Kostenstelle`, `Rechnungen`, `Offene Findings`, `Offenes Volumen`,
 `Offener Prüfaufwand (min)`, `Offener Prüfaufwand (EUR)`, `Top-Rechnung` (inkl.
 Summenzeile). Ohne Daten erscheint ein Hinweis; bei `400` wird eine sichtbare

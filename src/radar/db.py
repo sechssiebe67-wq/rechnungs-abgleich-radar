@@ -1194,53 +1194,189 @@ class Store:
         review_minutes: Optional[float] = None,
         hourly_rate: Optional[float] = None,
     ) -> dict:
-        """Open review load per (month, entity, cost center) over time.
+        """Open review load per (month, cost center) aggregated across entities.
 
-        Explicit cost-center axis on group level, answering for cost-center
-        controllers without a web UI *which cost center is accumulating backlog
-        over the months, and how much effort does it bind?* The endpoint follows
-        exactly the pattern of the existing review-workload time series — same
-        ROI assumptions, same ``top_invoice`` structure, same
-        ``totals``/``parameters`` fields and the same filter/validation
-        semantics.
+        Consolidated **group-level cost-center axis**, answering for cost-center
+        controllers *which cost center is accumulating backlog over the months
+        across the whole group, and how much effort does it bind?* Unlike
+        :meth:`review_workload_timeseries`, which keeps the ``entity`` axis in
+        the bucket key, invoices are aggregated **across entities** by
+        ``strftime('%Y-%m', invoices.created_at)`` as ``month`` and
+        ``invoices.cost_center``; only invoices with at least one still-open
+        finding (``feedback IS NULL``) enter the report (a single ``JOIN``
+        aggregate per invoice — no N+1).
 
-        Invoices are bucketed by ``strftime('%Y-%m', invoices.created_at)`` as
-        ``month``, ``invoices.entity`` and ``invoices.cost_center``; only
-        invoices with at least one still-open finding (``feedback IS NULL``)
-        enter the report. The per-invoice ``JOIN`` aggregate (no N+1) is exactly
-        the one used by :meth:`review_workload_timeseries`, but with ``entity``
-        **and** ``cost_center`` as grouping keys.
+        Each row carries ``month``, ``cost_center``, ``invoice_count`` (invoices
+        with at least one open finding), ``open_finding_count``, ``open_amount``
+        (sum of the amounts of open findings), the bound effort
+        ``open_review_minutes``/``open_review_cost_eur`` (using exactly the ROI
+        assumptions: ``open_finding_count × review_minutes_per_finding`` and
+        ``open_review_minutes / 60 × hourly_rate``, rounded to two decimals) and
+        ``top_invoice`` — the invoice with the largest ``open_amount`` in the
+        bucket (ties: ``open_finding_count`` descending, then ``id`` ascending)
+        with ``id``, ``invoice_number``, ``supplier``, ``entity``,
+        ``open_finding_count`` and ``open_amount``. ``top_invoice`` is ``None``
+        for a bucket without a qualifying invoice.
 
-        Each row carries ``month``, ``entity``, ``cost_center``,
-        ``invoice_count``, ``open_finding_count``, ``open_amount``, the bound
-        effort ``open_review_minutes``/``open_review_cost_eur`` and
-        ``top_invoice`` (largest ``open_amount``; ties: ``open_finding_count``
-        descending, then ``id`` ascending) with ``id``, ``invoice_number``,
-        ``supplier``, ``open_finding_count`` and ``open_amount``. Rows are
-        sorted by ``open_amount`` descending, then ``entity``, ``cost_center``
-        and ``month`` ascending. ``totals`` mirrors the row shape (``entity``
-        and ``cost_center`` are ``None``) and is the exact sum over the returned
-        rows; ``parameters`` echoes the effective assumptions.
+        Rows are sorted by ``open_amount`` descending, then ``cost_center`` and
+        ``month`` ascending for deterministic output. ``totals`` mirrors the row
+        shape (``month``/``cost_center`` are ``None``) and is the exact sum over
+        the returned rows (``top_invoice`` = the global largest).
+        ``parameters`` echoes the effective assumptions.
 
         The ``months`` window (default
         :data:`DEFAULT_REVIEW_WORKLOAD_TIMESERIES_MONTHS`, must be ``>= 1``)
         keeps only the newest ``months`` calendar months present in the filtered
         data (anchor: newest month). ``entities``/``cost_centers`` restrict the
-        view like :meth:`list_invoices` (AND-combined); unknown values are not
-        an error and simply yield an empty ``rows`` list. ``review_minutes`` and
+        view like :meth:`list_invoices` (AND-combined); unknown values are not an
+        error and simply yield an empty ``rows`` list. ``review_minutes`` and
         ``hourly_rate`` override the settings for what-if analyses.
 
-        This is a pure read extension that reuses the existing aggregation:
-        no new tables, columns or runtime dependencies.
+        This is a pure read extension over the existing tables: no new tables,
+        columns or runtime dependencies.
         """
-        return self.review_workload_timeseries(
-            settings,
-            months=months,
-            entities=entities,
-            cost_centers=cost_centers,
-            review_minutes=review_minutes,
-            hourly_rate=hourly_rate,
+        base = settings or Settings()
+        minutes = base.review_minutes_per_finding if review_minutes is None else float(
+            review_minutes
         )
+        rate = (
+            base.review_hourly_rate_eur if hourly_rate is None else float(hourly_rate)
+        )
+        if minutes < 0:
+            raise ValueError("review_minutes must be >= 0")
+        if rate < 0:
+            raise ValueError("hourly_rate must be >= 0")
+        window = (
+            DEFAULT_REVIEW_WORKLOAD_TIMESERIES_MONTHS
+            if months is None
+            else int(months)
+        )
+        if window < 1:
+            raise ValueError("months must be >= 1")
+
+        clauses: List[str] = []
+        params: List[object] = []
+        if entities:
+            placeholders = ", ".join("?" for _ in entities)
+            clauses.append("i.entity IN (%s)" % placeholders)
+            params.extend(entities)
+        if cost_centers:
+            placeholders = ", ".join("?" for _ in cost_centers)
+            clauses.append("i.cost_center IN (%s)" % placeholders)
+            params.extend(cost_centers)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+
+        with self.connect() as conn:
+            rows = conn.execute(
+                """SELECT strftime('%%Y-%%m', i.created_at) AS month,
+                          COALESCE(i.cost_center, '') AS cost_center,
+                          i.id AS id,
+                          i.invoice_number AS invoice_number,
+                          i.supplier AS supplier,
+                          COALESCE(i.entity, 'default') AS entity,
+                          COALESCE(SUM(CASE WHEN f.id IS NOT NULL AND f.feedback IS NULL
+                                            THEN 1 ELSE 0 END), 0) AS open_finding_count,
+                          COALESCE(SUM(CASE WHEN f.status = 'open'
+                                            THEN f.amount ELSE 0 END), 0) AS open_amount
+                   FROM invoices i
+                   JOIN findings f ON f.invoice_id = i.id
+                   %s
+                   GROUP BY i.id
+                   HAVING open_finding_count > 0"""
+                % where,
+                params,
+            ).fetchall()
+
+        months_present = [row["month"] for row in rows if row["month"]]
+        cutoff = None
+        if months_present:
+            cutoff = _shift_month(max(months_present), -(window - 1))
+
+        groups: dict = {}
+        kept_invoices: List[dict] = []
+        for row in rows:
+            month = row["month"]
+            if not month:
+                continue
+            if cutoff is not None and month < cutoff:
+                continue
+            cost_center = row["cost_center"] or ""
+            invoice = {
+                "id": int(row["id"]),
+                "invoice_number": row["invoice_number"],
+                "supplier": row["supplier"],
+                "entity": row["entity"] or "default",
+                "open_finding_count": int(row["open_finding_count"]),
+                "open_amount": round(float(row["open_amount"]), 2),
+            }
+            kept_invoices.append(invoice)
+            key = (month, cost_center)
+            group = groups.get(key)
+            if group is None:
+                group = {
+                    "invoice_count": 0,
+                    "open_finding_count": 0,
+                    "open_amount": 0.0,
+                    "invoices": [],
+                }
+                groups[key] = group
+            group["invoice_count"] += 1
+            group["open_finding_count"] += invoice["open_finding_count"]
+            group["open_amount"] += invoice["open_amount"]
+            group["invoices"].append(invoice)
+
+        result_rows: List[dict] = []
+        for (month, cost_center), group in groups.items():
+            open_count = group["open_finding_count"]
+            open_minutes = round(open_count * minutes, 2)
+            result_rows.append(
+                {
+                    "month": month,
+                    "cost_center": cost_center,
+                    "invoice_count": group["invoice_count"],
+                    "open_finding_count": open_count,
+                    "open_amount": round(group["open_amount"], 2),
+                    "open_review_minutes": open_minutes,
+                    "open_review_cost_eur": round(open_minutes / 60 * rate, 2),
+                    "top_invoice": _pick_top_invoice(group["invoices"]),
+                }
+            )
+        result_rows.sort(
+            key=lambda entry: (
+                -entry["open_amount"],
+                entry["cost_center"],
+                entry["month"],
+            )
+        )
+
+        total_minutes = round(
+            sum(entry["open_review_minutes"] for entry in result_rows), 2
+        )
+        totals = {
+            "month": None,
+            "cost_center": None,
+            "invoice_count": sum(entry["invoice_count"] for entry in result_rows),
+            "open_finding_count": sum(
+                entry["open_finding_count"] for entry in result_rows
+            ),
+            "open_amount": round(
+                sum(entry["open_amount"] for entry in result_rows), 2
+            ),
+            "open_review_minutes": total_minutes,
+            "open_review_cost_eur": round(
+                sum(entry["open_review_cost_eur"] for entry in result_rows), 2
+            ),
+            "top_invoice": _pick_top_invoice(kept_invoices),
+        }
+        return {
+            "rows": result_rows,
+            "totals": totals,
+            "parameters": {
+                "months": window,
+                "review_minutes_per_finding": minutes,
+                "review_hourly_rate_eur": rate,
+            },
+        }
 
     def supplier_backlog_trend(
         self,

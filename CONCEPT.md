@@ -66,12 +66,15 @@ Kostenstelle** (`GET /api/review-workload/by-cost-center/timeseries`) die
 explizite Kostenstellen-Achse auf Konzernebene: Neben `by_entity_rollup`
 (Konzern/Gesellschaft), `by_supplier_rollup` (Einkauf) und
 `by_cost_center_rollup` (operative Kostenstellen-Sicht) beantwortet sie je
-`(Monat, Gesellschaft, Kostenstelle)` dieselbe Frage — *„Welche Kostenstelle
-baut über die Monate Rückstand auf, und wie viel Aufwand bindet sie?“* — und
-folgt exakt dem Muster der bestehenden Zeitreihen (gleiche ROI-Annahmen, gleiche
-`top_invoice`-Struktur, gleiche `totals`/`parameters`-Felder, gleiche Filter- und
-Validierungssemantik). Damit ist die Kostenstellen-Zeitreihe auch ohne Web-UI
-für Kostenstellen-Controller nutzbar.
+`(Monat, Kostenstelle)` — **über alle Gesellschaften aggregiert** — dieselbe
+Frage — *„Welche Kostenstelle baut über die Monate Rückstand auf, und wie viel
+Aufwand bindet sie?“* — und folgt exakt dem Muster der bestehenden Zeitreihen
+(gleiche ROI-Annahmen, gleiche `top_invoice`-Struktur, gleiche
+`totals`/`parameters`-Felder, gleiche Filter- und Validierungssemantik). Anders
+als die bestehende Prüf-Last-Zeitreihe `GET /api/review-workload/timeseries`,
+die die Gesellschaft im Bucket-Schlüssel behält, fasst sie Rechnungen
+verschiedener Gesellschaften mit derselben Kostenstelle zusammen. Damit ist die
+Kostenstellen-Zeitreihe auch ohne Web-UI für Kostenstellen-Controller nutzbar.
 
 ## Intended users
 
@@ -96,9 +99,9 @@ den größten Teil davon bindet. Zusätzlich nutzen die **Kostenstellen-Controll
 die **Prüf-Last je Kostenstelle (Zeitreihe)**
 (`GET /api/review-workload/by-cost-center/timeseries`), um für ihre Kostenstelle
 ohne Web-UI nachzuvollziehen, wie sich der Rückstand über die Monate aufbaut und
-wie viel Prüfaufwand (Minuten und EUR) daran gebunden ist; die Zeitreihe ist je
-`(Monat, Gesellschaft, Kostenstelle)` gefiltert und zeigt je Bucket die Rechnung
-mit dem größten offenen Volumen. Der **Einkauf** als sekundärer Konsument nutzt die
+wie viel Prüfaufwand (Minuten und EUR) daran gebunden ist; die Zeitreihe
+aggregiert über alle Gesellschaften und zeigt je `(Monat, Kostenstelle)` die
+Rechnung mit dem größten offenen Volumen. Der **Einkauf** als sekundärer Konsument nutzt die
 **Prüf-Last je Lieferant (Zeitreihe)**
 (`GET /api/review-workload/by-supplier/timeseries`), um dieselbe Frage je
 `(Monat, Lieferant)` zu beantworten: *Welcher Lieferant baut über die Monate
@@ -315,13 +318,12 @@ persistentem Speicher.
   `top_invoice`-Struktur, gleiche `totals`/`parameters`-Felder, gleiche Filter-
   und Validierungssemantik) und ist eine reine Lese-Erweiterung ohne neue
   Tabellen, Spalten oder Laufzeit-Abhängigkeiten.
-  - Gruppiert wird je `strftime('%Y-%m', invoices.created_at)` als `month`, je
-    `invoices.entity` und je `invoices.cost_center`. Nur Rechnungen mit
-    mindestens einem offenen Finding (`feedback IS NULL`) gehen ein (ein
-    `JOIN`-Aggregat je Rechnung, kein N+1 — identisch zu
-    `review_workload_timeseries`, aber mit `entity` **und** `cost_center` als
-    Gruppenschlüssel).
-  - Jede Zeile enthält `month`, `entity`, `cost_center`, `invoice_count`
+  - Gruppiert wird je `strftime('%Y-%m', invoices.created_at)` als `month` und
+    je `invoices.cost_center` — **über alle Gesellschaften aggregiert**, anders
+    als `review_workload_timeseries`, die die Gesellschaft im Bucket-Schlüssel
+    behält. Nur Rechnungen mit mindestens einem offenen Finding
+    (`feedback IS NULL`) gehen ein (ein `JOIN`-Aggregat je Rechnung, kein N+1).
+  - Jede Zeile enthält `month`, `cost_center`, `invoice_count`
     (Rechnungen mit mindestens einem offenen Finding), `open_finding_count`,
     `open_amount` (Summe der Beträge offener Findings), die Aufwandsfelder
     `open_review_minutes`/`open_review_cost_eur` nach denselben ROI-Annahmen wie
@@ -330,12 +332,12 @@ persistentem Speicher.
     `open_review_cost_eur = open_review_minutes / 60 × hourly_rate`, auf zwei
     Nachkommastellen) sowie `top_invoice` — die Rechnung mit dem größten
     `open_amount` im Bucket (Gleichstand: `open_finding_count` absteigend, dann
-    `id` aufsteigend) mit `id`, `invoice_number`, `supplier`,
+    `id` aufsteigend) mit `id`, `invoice_number`, `supplier`, `entity`,
     `open_finding_count` und `open_amount`. `top_invoice` ist `null`, wenn ein
     Bucket keine qualifizierende Rechnung enthält.
-  - Sortiert wird absteigend nach `open_amount`, dann aufsteigend nach `entity`,
+  - Sortiert wird absteigend nach `open_amount`, dann aufsteigend nach
     `cost_center`, `month` (deterministisch). `totals` trägt dieselbe
-    Feldstruktur (`entity == null`, `cost_center == null`) und aggregiert exakt
+    Feldstruktur (`cost_center == null`) und aggregiert exakt
     über alle gelieferten Zeilen (`top_invoice` = die global größte Rechnung).
     `parameters` weist `months`, `review_minutes_per_finding` und
     `review_hourly_rate_eur` aus.
@@ -344,8 +346,7 @@ persistentem Speicher.
     `?entity=`/`?cost_center=` filtern wiederholbar und UND-verknüpft wie
     `list_invoices`; unbekannte Filterwerte liefern `200` mit leeren Listen,
     niemals `400`. Die Annahmen lassen sich über
-    `?review_minutes=`/`?hourly_rate=` überschreiben. Die Werte stimmen exakt
-    mit den Werten der bestehenden Zeitreihen überein.
+    `?review_minutes=`/`?hourly_rate=` überschreiben.
 - **Web-Oberfläche mit Seitenumschaltung und Sortierung**
   (`src/radar/static/index.html`): Die Listen für Findings, Rechnungen und
   Lieferanten-Regeln bedienen die oben beschriebenen Endpoint-Parameter direkt,
@@ -389,7 +390,7 @@ persistentem Speicher.
   - Die Sektion **„Prüf-Last je Kostenstelle (Zeitreihe)“** bindet
     `GET /api/review-workload/by-cost-center/timeseries` an: ein Monats-Selektor,
     eine Gesellschafts- und eine Kostenstellen-Mehrfachauswahl und die Tabelle
-    `Monat`, `Gesellschaft`, `Kostenstelle`, `Rechnungen`, `Offene Findings`,
+    `Monat`, `Kostenstelle`, `Rechnungen`, `Offene Findings`,
     `Offenes Volumen`, `Offener Prüfaufwand (min)`, `Offener Prüfaufwand (EUR)`,
     `Top-Rechnung` (inkl. Summenzeile); bei `400` erscheint eine sichtbare
     Fehlermeldung, ohne die zuletzt geladene Ansicht zu verwerfen.
@@ -932,12 +933,16 @@ priorisiert die Freigabe-Entscheidung.
     `GET /api/review-workload/by-cost-center/timeseries` beantwortet das Radar
     die Frage der Kostenstellen-Controller *„welche Kostenstelle baut über die
     Monate Rückstand auf, und wie viel Aufwand bindet sie?“* je
-    `(Monat, Gesellschaft, Kostenstelle)`, inklusive `top_invoice`, `totals` und
+    `(Monat, Kostenstelle)` **über alle Gesellschaften aggregiert**, inklusive
+    `top_invoice`, `totals` und
     `parameters` sowie den Filtern `?months=`/`?entity=`/`?cost_center=`
     (UND-verknüpft) und den What-if-Annahmen `?review_minutes=`/`?hourly_rate=`.
     Die Weboberfläche zeigt die Sektion „Prüf-Last je Kostenstelle (Zeitreihe)“.
     Der Endpoint ist eine reine Lese-Erweiterung und folgt exakt dem Muster der
-    bestehenden Zeitreihen. **Nächster sinnvoller Schritt:** einen eigenen
+    bestehenden Zeitreihen, unterscheidet sich von
+    `/api/review-workload/timeseries` aber durch die konsolidierte
+    Kostenstellen-Achse ohne Gesellschaftsschlüssel.
+    **Nächster sinnvoller Schritt:** einen eigenen
     **Kostenstellen-Digest** (offene Last + ROI je Kostenstelle, neuester Monat
     gegen Vormonat) aktiv an die Kostenstellen-Controller zuzustellen.
 
@@ -980,9 +985,9 @@ er bindet, sodass steigende Lieferanten-Rückstände früh angesprochen werden
 können. Die **Prüf-Last je Kostenstelle (Zeitreihe)**
 (`GET /api/review-workload/by-cost-center/timeseries`) überträgt dieselbe
 Auswertung auf die Kostenstellen-Achse und macht die offene Last je
-`(Monat, Gesellschaft, Kostenstelle)` sichtbar; die Werte stimmen exakt mit der
-bestehenden Prüf-Last-Zeitreihe überein, sodass der Concierge-Test den Rückstand
-je Kostenstelle ohne Web-UI nachvollziehen kann. Als zusätzliche Auswertungsgrundlage
+`(Monat, Kostenstelle)` **über alle Gesellschaften aggregiert** sichtbar; so
+kann der Concierge-Test den konzernweiten Rückstand
+je Kostenstelle ohne Web-UI nachvollziehen. Als zusätzliche Auswertungsgrundlage
 dient das **Abweichungsvolumen je Artikel pro Rechnung** aus der
 Gruppenansicht (`items`/`items_total_amount` in `GET /api/invoices/:id`): Es
 zeigt im Concierge-Test, welche Artikel und Positionen — auch bei Rechnungen

@@ -14,7 +14,6 @@ from test_api import ApiTestCase  # noqa: E402
 
 ROW_FIELDS = {
     "month",
-    "entity",
     "cost_center",
     "invoice_count",
     "open_finding_count",
@@ -28,13 +27,19 @@ TOP_INVOICE_FIELDS = {
     "id",
     "invoice_number",
     "supplier",
+    "entity",
     "open_finding_count",
     "open_amount",
 }
 
 
 class ReviewWorkloadByCostCenterTimeseriesStoreTests(unittest.TestCase):
-    """Store-level tests for the per-cost-center open review-load time series."""
+    """Store-level tests for the consolidated per-cost-center time series.
+
+    The view aggregates across entities: the bucket key is ``(month,
+    cost_center)`` only, unlike ``review_workload_timeseries`` which keeps the
+    ``entity`` axis.
+    """
 
     def setUp(self):
         self.settings = temp_settings()
@@ -96,32 +101,29 @@ class ReviewWorkloadByCostCenterTimeseriesStoreTests(unittest.TestCase):
         self.assertEqual(result["totals"]["open_review_minutes"], 0.0)
         self.assertEqual(result["totals"]["open_review_cost_eur"], 0.0)
         self.assertIsNone(result["totals"]["top_invoice"])
-        self.assertIsNone(result["totals"]["entity"])
         self.assertIsNone(result["totals"]["cost_center"])
         self.assertEqual(result["parameters"]["months"], 6)
         self.assertEqual(result["parameters"]["review_minutes_per_finding"], 4.0)
         self.assertEqual(result["parameters"]["review_hourly_rate_eur"], 45.0)
 
-    def test_month_entity_cost_center_bucketing_and_row_shape(self):
+    def test_month_cost_center_bucketing_and_row_shape(self):
         self._invoice([10.0], entity="DE01", cost_center="KST-1", month="2026-01")
         self._invoice([20.0], entity="DE01", cost_center="KST-2", month="2026-02")
         self._invoice([30.0], entity="DE02", cost_center="KST-2", month="2026-02")
 
         result = self.store.review_workload_by_cost_center_timeseries(self.settings)
-        self.assertEqual(len(result["rows"]), 3)
+        # The two KST-2 rows are merged across entities -> 2 buckets in total.
+        self.assertEqual(len(result["rows"]), 2)
         for row in result["rows"]:
             self.assertEqual(set(row.keys()), ROW_FIELDS)
             self.assertEqual(set(row["top_invoice"].keys()), TOP_INVOICE_FIELDS)
-        by_key = {
-            (r["month"], r["entity"], r["cost_center"]): r for r in result["rows"]
-        }
-        self.assertEqual(by_key[("2026-01", "DE01", "KST-1")]["open_amount"], 10.0)
-        self.assertEqual(by_key[("2026-02", "DE01", "KST-2")]["open_amount"], 20.0)
-        self.assertEqual(by_key[("2026-02", "DE02", "KST-2")]["open_amount"], 30.0)
+        by_key = {(r["month"], r["cost_center"]): r for r in result["rows"]}
+        self.assertEqual(by_key[("2026-01", "KST-1")]["open_amount"], 10.0)
+        self.assertEqual(by_key[("2026-02", "KST-2")]["open_amount"], 50.0)
 
-    def test_entity_and_cost_center_are_grouping_keys(self):
+    def test_entities_with_same_cost_center_are_merged(self):
         self._invoice([10.0], entity="DE01", cost_center="KST-1", month="2026-01")
-        self._invoice([5.0], entity="DE01", cost_center="KST-1", month="2026-01")
+        self._invoice([20.0], entity="DE02", cost_center="KST-1", month="2026-01")
         # Same entity, different cost center -> separate bucket.
         self._invoice([7.0], entity="DE01", cost_center="KST-2", month="2026-01")
 
@@ -130,9 +132,33 @@ class ReviewWorkloadByCostCenterTimeseriesStoreTests(unittest.TestCase):
         by_cc = {r["cost_center"]: r for r in result["rows"]}
         self.assertEqual(by_cc["KST-1"]["invoice_count"], 2)
         self.assertEqual(by_cc["KST-1"]["open_finding_count"], 2)
-        self.assertEqual(by_cc["KST-1"]["open_amount"], 15.0)
+        self.assertEqual(by_cc["KST-1"]["open_amount"], 30.0)
         self.assertEqual(by_cc["KST-2"]["invoice_count"], 1)
         self.assertEqual(by_cc["KST-2"]["open_amount"], 7.0)
+
+    def test_differs_from_entity_timeseries_but_totals_agree(self):
+        self._invoice([10.0], entity="DE01", cost_center="KST-1", month="2026-01")
+        self._invoice([30.0], entity="DE02", cost_center="KST-1", month="2026-01")
+
+        consolidated = self.store.review_workload_by_cost_center_timeseries(
+            self.settings
+        )
+        per_entity = self.store.review_workload_timeseries(self.settings)
+
+        # The existing view keeps entity in the key -> two rows for KST-1.
+        self.assertEqual(len(per_entity["rows"]), 2)
+        self.assertEqual({r["entity"] for r in per_entity["rows"]}, {"DE01", "DE02"})
+        self.assertNotEqual(consolidated, per_entity)
+
+        # The consolidated view merges both entities into one cost-center bucket.
+        self.assertEqual(len(consolidated["rows"]), 1)
+        self.assertNotIn("entity", consolidated["rows"][0])
+        self.assertEqual(consolidated["rows"][0]["cost_center"], "KST-1")
+        self.assertEqual(consolidated["rows"][0]["open_amount"], 40.0)
+        self.assertEqual(
+            consolidated["totals"]["open_amount"],
+            per_entity["totals"]["open_amount"],
+        )
 
     def test_only_open_invoices_are_counted(self):
         self._invoice([10.0])
@@ -193,7 +219,6 @@ class ReviewWorkloadByCostCenterTimeseriesStoreTests(unittest.TestCase):
             round(sum(r["open_review_cost_eur"] for r in rows), 2),
         )
         self.assertEqual(set(totals.keys()), ROW_FIELDS)
-        self.assertIsNone(totals["entity"])
         self.assertIsNone(totals["cost_center"])
         self.assertIsNone(totals["month"])
 
@@ -217,16 +242,7 @@ class ReviewWorkloadByCostCenterTimeseriesStoreTests(unittest.TestCase):
             round(sum(row["open_review_cost_eur"] for row in workload), 2),
         )
 
-    def test_matches_existing_timeseries_exactly(self):
-        self._invoice([10.0], entity="DE01", cost_center="KST-1", month="2026-01")
-        self._invoice([20.0], entity="DE01", cost_center="KST-2", month="2026-02")
-        self._invoice([30.0], entity="DE02", cost_center="KST-2", month="2026-02")
-
-        new = self.store.review_workload_by_cost_center_timeseries(self.settings)
-        old = self.store.review_workload_timeseries(self.settings)
-        self.assertEqual(new, old)
-
-    def test_sorted_by_open_amount_then_entity_cost_center_month(self):
+    def test_sorted_by_open_amount_then_cost_center_month(self):
         # Equal amounts to exercise the tie-break chain.
         self._invoice([20.0], entity="DE02", cost_center="B", month="2026-01")
         self._invoice([20.0], entity="DE01", cost_center="B", month="2026-02")
@@ -236,17 +252,14 @@ class ReviewWorkloadByCostCenterTimeseriesStoreTests(unittest.TestCase):
         rows = self.store.review_workload_by_cost_center_timeseries(self.settings)[
             "rows"
         ]
-        keys = [
-            (r["open_amount"], r["entity"], r["cost_center"], r["month"])
-            for r in rows
-        ]
+        keys = [(r["open_amount"], r["cost_center"], r["month"]) for r in rows]
         self.assertEqual(
             keys,
             [
-                (50.0, "DE02", "C", "2026-01"),
-                (20.0, "DE01", "A", "2026-03"),
-                (20.0, "DE01", "B", "2026-02"),
-                (20.0, "DE02", "B", "2026-01"),
+                (50.0, "C", "2026-01"),
+                (20.0, "A", "2026-03"),
+                (20.0, "B", "2026-01"),
+                (20.0, "B", "2026-02"),
             ],
         )
         again = self.store.review_workload_by_cost_center_timeseries(self.settings)[
@@ -284,6 +297,18 @@ class ReviewWorkloadByCostCenterTimeseriesStoreTests(unittest.TestCase):
         self.assertEqual(row["top_invoice"]["id"], many_id)
         self.assertEqual(row["top_invoice"]["open_finding_count"], 2)
         self.assertLess(tie_a_id, tie_b_id)
+
+    def test_top_invoice_carries_entity_for_merged_bucket(self):
+        self._invoice([10.0], entity="DE01", cost_center="KST-1", month="2026-01")
+        big_id, _ = self._invoice(
+            [99.0], entity="DE02", cost_center="KST-1", month="2026-01"
+        )
+
+        row = self.store.review_workload_by_cost_center_timeseries(self.settings)[
+            "rows"
+        ][0]
+        self.assertEqual(row["top_invoice"]["id"], big_id)
+        self.assertEqual(row["top_invoice"]["entity"], "DE02")
 
     def test_top_invoice_is_none_for_empty_list(self):
         self.assertIsNone(_pick_top_invoice([]))
@@ -328,22 +353,21 @@ class ReviewWorkloadByCostCenterTimeseriesStoreTests(unittest.TestCase):
         de01 = self.store.review_workload_by_cost_center_timeseries(
             self.settings, entities=["DE01"]
         )
-        self.assertEqual({r["entity"] for r in de01["rows"]}, {"DE01"})
+        self.assertEqual({r["cost_center"] for r in de01["rows"]}, {"KST-1", "KST-2"})
         self.assertEqual(de01["totals"]["open_amount"], 30.0)
 
         kst2 = self.store.review_workload_by_cost_center_timeseries(
             self.settings, cost_centers=["KST-2"]
         )
         self.assertEqual({r["cost_center"] for r in kst2["rows"]}, {"KST-2"})
-        self.assertEqual(
-            {r["open_amount"] for r in kst2["rows"]}, {20.0, 40.0}
-        )
+        # Both DE01 and DE02 contribute to the same KST-2 bucket.
+        self.assertEqual(len(kst2["rows"]), 1)
+        self.assertEqual(kst2["rows"][0]["open_amount"], 60.0)
 
         combined = self.store.review_workload_by_cost_center_timeseries(
             self.settings, entities=["DE01"], cost_centers=["KST-2"]
         )
         self.assertEqual(len(combined["rows"]), 1)
-        self.assertEqual(combined["rows"][0]["entity"], "DE01")
         self.assertEqual(combined["rows"][0]["cost_center"], "KST-2")
         self.assertEqual(combined["rows"][0]["open_amount"], 20.0)
 
@@ -452,7 +476,6 @@ class ReviewWorkloadByCostCenterTimeseriesApiTests(ApiTestCase):
 
         row = payload["rows"][0]
         self.assertEqual(set(row.keys()), ROW_FIELDS)
-        self.assertEqual(row["entity"], "DE01")
         self.assertEqual(row["cost_center"], "KST-100")
         self.assertEqual(row["invoice_count"], 2)
         self.assertEqual(row["open_finding_count"], 3)
@@ -460,18 +483,19 @@ class ReviewWorkloadByCostCenterTimeseriesApiTests(ApiTestCase):
         self.assertEqual(row["top_invoice"]["id"], high_id)
         self.assertEqual(row["top_invoice"]["open_amount"], 40.0)
 
-    def test_groups_by_entity_and_cost_center(self):
+    def test_merges_entities_sharing_a_cost_center(self):
         self._invoice("RE-A", [10.0], entity="DE01", cost_center="KST-1")
-        self._invoice("RE-B", [20.0], entity="DE02", cost_center="KST-2")
+        self._invoice("RE-B", [20.0], entity="DE02", cost_center="KST-1")
+        self._invoice("RE-C", [5.0], entity="DE02", cost_center="KST-2")
         status, payload = self.json_request(
             "GET", "/api/review-workload/by-cost-center/timeseries"
         )
         self.assertEqual(status, 200)
         self.assertEqual(payload["count"], 2)
-        self.assertEqual(
-            {(r["entity"], r["cost_center"]) for r in payload["rows"]},
-            {("DE01", "KST-1"), ("DE02", "KST-2")},
-        )
+        by_cc = {r["cost_center"]: r for r in payload["rows"]}
+        self.assertEqual(set(by_cc.keys()), {"KST-1", "KST-2"})
+        self.assertEqual(by_cc["KST-1"]["open_amount"], 30.0)
+        self.assertEqual(by_cc["KST-2"]["open_amount"], 5.0)
 
     def test_overrides_are_echoed(self):
         self._invoice("RE-1", [10.0], entity="DE01", cost_center="KST-1")
@@ -578,9 +602,11 @@ class ReviewWorkloadByCostCenterTimeseriesApiTests(ApiTestCase):
         )
         self.assertEqual(payload["count"], len(rows))
 
-    def test_matches_existing_timeseries_endpoint(self):
+    def test_differs_from_existing_timeseries_endpoint_but_totals_agree(self):
+        # Same cost center across two entities: the consolidated view merges
+        # them, the existing entity view keeps them apart.
         self._invoice("RE-DE01", [10.0], entity="DE01", cost_center="KST-1")
-        self._invoice("RE-DE02", [40.0], entity="DE02", cost_center="KST-2")
+        self._invoice("RE-DE02", [40.0], entity="DE02", cost_center="KST-1")
 
         status, new = self.json_request(
             "GET", "/api/review-workload/by-cost-center/timeseries"
@@ -590,7 +616,13 @@ class ReviewWorkloadByCostCenterTimeseriesApiTests(ApiTestCase):
             "GET", "/api/review-workload/timeseries"
         )
         self.assertEqual(status, 200)
-        self.assertEqual(new, old)
+
+        self.assertEqual(new["count"], 1)
+        self.assertEqual(old["count"], 2)
+        self.assertNotEqual(new["rows"], old["rows"])
+        self.assertEqual(
+            new["totals"]["open_amount"], old["totals"]["open_amount"]
+        )
 
     def test_open_amount_sum_matches_stats(self):
         self._invoice("RE-DE01", [10.0], entity="DE01")

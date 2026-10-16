@@ -187,8 +187,8 @@
   </section>
 
   <section>
-    <h2>Prüf-Last je Kostenstelle (Zeitreihe) <span class="muted">(offene Prüflast je Monat, Gesellschaft und Kostenstelle)</span></h2>
-    <p class="muted">Zeigt Kostenstellen-Controllern, welche Kostenstelle über die Monate Rückstand aufbaut und wie viel Aufwand sie bindet — inklusive der Rechnung mit dem größten offenen Volumen.</p>
+    <h2>Prüf-Last je Kostenstelle (Zeitreihe) <span class="muted">(offene Prüflast je Monat und Kostenstelle über alle Gesellschaften)</span></h2>
+    <p class="muted">Zeigt Kostenstellen-Controllern konzernweit, welche Kostenstelle über die Monate Rückstand aufbaut und wie viel Aufwand sie bindet — inklusive der Rechnung mit dem größten offenen Volumen.</p>
     <div class="controls">
       <label class="muted">Monate
         <select id="review-workload-cc-months" onchange="loadReviewWorkloadByCostCenterTimeseries()">
@@ -208,7 +208,7 @@
     </div>
     <p class="muted" id="review-workload-cc-hint">Lade …</p>
     <table id="review-workload-cc-table" style="margin-top:.5rem">
-      <thead><tr><th>Monat</th><th>Gesellschaft</th><th>Kostenstelle</th><th class="amount">Rechnungen</th><th class="amount">Offene Findings</th><th class="amount">Offenes Volumen</th><th class="amount">Offener Prüfaufwand (min)</th><th class="amount">Offener Prüfaufwand (EUR)</th><th>Top-Rechnung</th></tr></thead>
+      <thead><tr><th>Monat</th><th>Kostenstelle</th><th class="amount">Rechnungen</th><th class="amount">Offene Findings</th><th class="amount">Offenes Volumen</th><th class="amount">Offener Prüfaufwand (min)</th><th class="amount">Offener Prüfaufwand (EUR)</th><th>Top-Rechnung</th></tr></thead>
       <tbody id="review-workload-cc"></tbody>
     </table>
   </section>
@@ -1005,7 +1005,6 @@ async function loadReviewWorkloadByCostCenterTimeseries() {
     table.style.display = '';
     const html = rows.map(r => `<tr>
       <td>${esc(r.month)}</td>
-      <td>${esc(r.entity)}</td>
       <td>${esc(r.cost_center || '—')}</td>
       <td class="amount">${esc(r.invoice_count)}</td>
       <td class="amount">${esc(r.open_finding_count)}</td>
@@ -1017,7 +1016,6 @@ async function loadReviewWorkloadByCostCenterTimeseries() {
     const t = d.totals || {};
     html.push(`<tr class="total-row">
       <td><strong>Summe</strong></td>
-      <td>—</td>
       <td>—</td>
       <td class="amount">${esc(t.invoice_count)}</td>
       <td class="amount">${esc(t.open_finding_count)}</td>
