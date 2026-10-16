@@ -221,6 +221,12 @@
       <thead><tr><th>Gesellschaft</th><th class="amount">Offene Findings</th><th class="amount">Offenes Volumen</th><th class="amount">Offener Aufwand (EUR)</th><th class="amount">Bestätigt</th><th class="amount">Fehlalarm</th><th class="amount">Precision</th><th class="amount">Vermiedener Aufwand (EUR)</th><th class="amount">Vermiedene Fehlzahlung (EUR)</th></tr></thead>
       <tbody id="digest-rollup"></tbody>
     </table>
+    <h3 style="margin:1.25rem 0 .25rem; font-size:.9rem;">Kostenstellen-Rollup <span class="muted">(offene Last und ROI je Gesellschaft und Kostenstelle)</span></h3>
+    <p class="muted" id="digest-cost-center-rollup-hint">Lade …</p>
+    <table id="digest-cost-center-rollup-table" style="margin-top:.5rem">
+      <thead><tr><th>Gesellschaft</th><th>Kostenstelle</th><th class="amount">Offene Findings</th><th class="amount">Offenes Volumen</th><th class="amount">Offener Aufwand (EUR)</th><th class="amount">Bestätigt</th><th class="amount">Fehlalarm</th><th class="amount">Precision</th><th class="amount">Vermiedener Aufwand (EUR)</th><th class="amount">Vermiedene Fehlzahlung (EUR)</th></tr></thead>
+      <tbody id="digest-cost-center-rollup"></tbody>
+    </table>
     <h3 style="margin:1.25rem 0 .25rem; font-size:.9rem;">Lieferanten-Backlog-Trend <span class="muted">(neuester Monat vs. Vormonat)</span></h3>
     <p class="muted" id="digest-backlog-trend-hint">Lade …</p>
     <table id="digest-backlog-trend-table" style="margin-top:.5rem">
@@ -596,6 +602,39 @@ function renderDigestRollup(rollup) {
   if (totals) body.push(cells(Object.assign({}, totals, {entity: 'Gesamt'})));
   tbody.innerHTML = body.join('');
 }
+function renderDigestCostCenterRollup(rollup) {
+  const tbody = document.getElementById('digest-cost-center-rollup');
+  const table = document.getElementById('digest-cost-center-rollup-table');
+  const hint = document.getElementById('digest-cost-center-rollup-hint');
+  if (!tbody || !table || !hint) return;
+  const rows = (rollup && rollup.cost_centers) || [];
+  const totals = rollup && rollup.totals;
+  if (!rows.length) {
+    hint.textContent = 'Keine Kostenstellen für die gewählten Filter.';
+    table.style.display = 'none';
+    tbody.innerHTML = '';
+    return;
+  }
+  hint.textContent = '';
+  table.style.display = '';
+  const cells = r => `<tr>
+    <td>${esc(r.entity || '—')}</td>
+    <td>${esc(r.cost_center || '—')}</td>
+    <td class="amount">${esc(r.open_finding_count)}</td>
+    <td class="amount">${money(r.open_amount)}</td>
+    <td class="amount">${money(r.open_review_cost_eur)}</td>
+    <td class="amount">${esc(r.confirmed)}</td>
+    <td class="amount">${esc(r.false_alarm)}</td>
+    <td class="amount">${pct(r.precision)}</td>
+    <td class="amount">${money(r.avoided_review_cost_eur)}</td>
+    <td class="amount">${money(r.avoided_mispayment_eur)}</td>
+  </tr>`;
+  const body = rows.map(cells);
+  if (totals) {
+    body.push(cells(Object.assign({}, totals, {entity: 'Gesamt', cost_center: ''})));
+  }
+  tbody.innerHTML = body.join('');
+}
 function renderDigestBacklogTrend(trend) {
   const tbody = document.getElementById('digest-backlog-trend');
   const table = document.getElementById('digest-backlog-trend-table');
@@ -642,6 +681,7 @@ async function loadDigest() {
   ];
   document.getElementById('digest-entities').textContent = parts.join(' — ') + '.';
   renderDigestRollup(d.by_entity_rollup);
+  renderDigestCostCenterRollup(d.by_cost_center_rollup);
   renderDigestBacklogTrend(d.by_supplier_backlog_trend);
   const htmlLink = document.getElementById('digest-html-link');
   const jsonLink = document.getElementById('digest-json-link');

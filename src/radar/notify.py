@@ -17,6 +17,7 @@ from typing import Callable, Dict, List, Optional
 from .config import Settings
 from .db import Store
 from .digest import (
+    empty_cost_center_rollup,
     empty_rollup,
     empty_supplier_backlog_trend,
     empty_supplier_rollup,
@@ -67,6 +68,8 @@ def _webhook_payload(digest: dict) -> dict:
         "by_entity_rollup": digest.get("by_entity_rollup") or empty_rollup(),
         "by_supplier_rollup": digest.get("by_supplier_rollup")
         or empty_supplier_rollup(),
+        "by_cost_center_rollup": digest.get("by_cost_center_rollup")
+        or empty_cost_center_rollup(),
         "by_supplier_backlog_trend": digest.get("by_supplier_backlog_trend")
         or empty_supplier_backlog_trend(),
         "top_findings": top,

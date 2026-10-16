@@ -10,7 +10,7 @@ from __future__ import annotations
 import sqlite3
 from contextlib import contextmanager
 from datetime import date
-from typing import Iterator, List, Optional
+from typing import Iterator, List, Optional, Union
 
 from .config import Settings, effective_rule
 from .models import (
@@ -1710,8 +1710,34 @@ class Store:
     ) -> List[dict]:
         """Aggregate open review load and realized ROI per ``key_name`` group.
 
-        Shared by :meth:`entity_rollup` and :meth:`supplier_rollup`. Groups the
-        (filtered) invoices by ``group_expression`` and combines, per group, the
+        Shared by :meth:`entity_rollup` and :meth:`supplier_rollup`; delegates to
+        :meth:`_workload_rollup_multi` with a single group key. See that method
+        for the field semantics, the ROI assumptions and the filtering.
+        """
+        return self._workload_rollup_multi(
+            [group_expression],
+            [key_name],
+            settings,
+            entities,
+            cost_centers,
+            review_minutes,
+            hourly_rate,
+        )
+
+    def _workload_rollup_multi(
+        self,
+        group_expressions: List[str],
+        key_names: List[str],
+        settings: Optional[Settings] = None,
+        entities: Optional[List[str]] = None,
+        cost_centers: Optional[List[str]] = None,
+        review_minutes: Optional[float] = None,
+        hourly_rate: Optional[float] = None,
+    ) -> List[dict]:
+        """Aggregate open review load and realized ROI per group tuple.
+
+        Groups the (filtered) invoices by the given ``group_expressions`` — one
+        SQL expression per entry of ``key_names`` — and combines, per group, the
         currently bound review load (``open_finding_count``, ``open_amount``,
         ``open_review_minutes``, ``open_review_cost_eur``) with the benefit
         realized from feedback (``confirmed``, ``false_alarm``, ``precision``,
@@ -1751,9 +1777,15 @@ class Store:
             params.extend(cost_centers)
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
 
+        select_groups = ", ".join(
+            "%s AS grp_%d" % (expression, index)
+            for index, expression in enumerate(group_expressions)
+        )
+        group_by = ", ".join(group_expressions)
+
         with self.connect() as conn:
             rows = conn.execute(
-                """SELECT %s AS grp,
+                """SELECT %s,
                           COALESCE(SUM(CASE WHEN f.status = 'open'
                                             THEN 1 ELSE 0 END), 0)
                               AS open_finding_count,
@@ -1771,7 +1803,7 @@ class Store:
                    LEFT JOIN findings f ON f.invoice_id = i.id
                    %s
                    GROUP BY %s"""
-                % (group_expression, where, group_expression),
+                % (select_groups, where, group_by),
                 params,
             ).fetchall()
 
@@ -1784,9 +1816,12 @@ class Store:
             open_count = int(row["open_finding_count"])
             open_minutes = round(open_count * minutes, 2)
             avoided_minutes = round(confirmed * minutes, 2)
-            rows_out.append(
+            entry: dict = {
+                key_names[index]: row["grp_%d" % index]
+                for index in range(len(key_names))
+            }
+            entry.update(
                 {
-                    key_name: row["grp"],
                     "open_finding_count": open_count,
                     "open_amount": round(float(row["open_amount"]), 2),
                     "open_review_minutes": open_minutes,
@@ -1804,47 +1839,56 @@ class Store:
                     ),
                 }
             )
+            rows_out.append(entry)
         return rows_out
 
-    def _rollup_totals(self, rows_out: List[dict], key_name: str) -> dict:
+    def _rollup_totals(
+        self, rows_out: List[dict], key_names: Union[str, List[str]]
+    ) -> dict:
         """Sum per-group rollup rows into a ``totals`` row of the same shape.
 
-        The totals row carries exactly the same fields with the group key set to
-        ``None`` and is the exact sum over ``rows_out`` for every numeric field;
-        ``precision`` is recomputed from the aggregated counts (never averaged).
+        ``key_names`` is the (single) group key or the list of group keys; each
+        is set to ``None`` in the totals row. The totals row is the exact sum
+        over ``rows_out`` for every numeric field; ``precision`` is recomputed
+        from the aggregated counts (never averaged).
         """
+        if isinstance(key_names, str):
+            key_names = [key_names]
         total_confirmed = sum(entry["confirmed"] for entry in rows_out)
         total_false_alarm = sum(entry["false_alarm"] for entry in rows_out)
         reviewed_total = total_confirmed + total_false_alarm
         total_precision = (
             (total_confirmed / reviewed_total) if reviewed_total else None
         )
-        return {
-            key_name: None,
-            "open_finding_count": sum(
-                entry["open_finding_count"] for entry in rows_out
-            ),
-            "open_amount": round(
-                sum(entry["open_amount"] for entry in rows_out), 2
-            ),
-            "open_review_minutes": round(
-                sum(entry["open_review_minutes"] for entry in rows_out), 2
-            ),
-            "open_review_cost_eur": round(
-                sum(entry["open_review_cost_eur"] for entry in rows_out), 2
-            ),
-            "confirmed": total_confirmed,
-            "false_alarm": total_false_alarm,
-            "precision": round(total_precision, 4)
-            if total_precision is not None
-            else None,
-            "avoided_review_cost_eur": round(
-                sum(entry["avoided_review_cost_eur"] for entry in rows_out), 2
-            ),
-            "avoided_mispayment_eur": round(
-                sum(entry["avoided_mispayment_eur"] for entry in rows_out), 2
-            ),
-        }
+        totals: dict = {name: None for name in key_names}
+        totals.update(
+            {
+                "open_finding_count": sum(
+                    entry["open_finding_count"] for entry in rows_out
+                ),
+                "open_amount": round(
+                    sum(entry["open_amount"] for entry in rows_out), 2
+                ),
+                "open_review_minutes": round(
+                    sum(entry["open_review_minutes"] for entry in rows_out), 2
+                ),
+                "open_review_cost_eur": round(
+                    sum(entry["open_review_cost_eur"] for entry in rows_out), 2
+                ),
+                "confirmed": total_confirmed,
+                "false_alarm": total_false_alarm,
+                "precision": round(total_precision, 4)
+                if total_precision is not None
+                else None,
+                "avoided_review_cost_eur": round(
+                    sum(entry["avoided_review_cost_eur"] for entry in rows_out), 2
+                ),
+                "avoided_mispayment_eur": round(
+                    sum(entry["avoided_mispayment_eur"] for entry in rows_out), 2
+                ),
+            }
+        )
+        return totals
 
     def entity_rollup(
         self,
@@ -1949,6 +1993,67 @@ class Store:
         return {
             "entities": rows_out,
             "totals": self._rollup_totals(rows_out, "supplier"),
+        }
+
+    def cost_center_rollup(
+        self,
+        settings: Optional[Settings] = None,
+        entities: Optional[List[str]] = None,
+        cost_centers: Optional[List[str]] = None,
+        review_minutes: Optional[float] = None,
+        hourly_rate: Optional[float] = None,
+    ) -> dict:
+        """Consolidated per-cost-center workload and ROI for the weekly digest.
+
+        Mirrors :meth:`entity_rollup` but groups by the tuple
+        ``(invoices.entity, invoices.cost_center)``, so the digest answers the
+        cost-center controller question *which cost center currently binds the
+        most open review load, and what has it already saved the group?* using
+        the same fields as the per-society rollup: the bound review load
+        (``open_finding_count``, ``open_amount``, ``open_review_minutes``,
+        ``open_review_cost_eur``) and the benefit realized from feedback
+        (``confirmed``, ``false_alarm``, ``precision``,
+        ``avoided_review_cost_eur``, ``avoided_mispayment_eur``). The effort
+        fields follow exactly the same ROI assumptions (see
+        :meth:`_workload_rollup`), and ``open_amount`` matches the ``open_amount``
+        reported by ``GET /api/stats`` for the same scope.
+
+        Invoices with an empty cost center are grouped under
+        ``cost_center == ""``, consistent with the flat ``by_cost_center``
+        breakdown. A society/cost-center combination without open findings still
+        appears with zeros. Rows are sorted deterministically: by ``open_amount``
+        descending, then ``entity`` ascending, then ``cost_center`` ascending.
+        The returned ``totals`` row carries the exact same fields with ``entity``
+        and ``cost_center`` both ``None`` and sums the per-group rows;
+        ``precision`` is recomputed from the aggregated counts rather than
+        averaged.
+
+        ``entities``/``cost_centers`` restrict the view exactly like
+        :meth:`list_invoices` (AND-combined); unknown values are not an error
+        and yield empty rows with a zeroed totals row. ``review_minutes`` and
+        ``hourly_rate`` override the settings for what-if analyses. Only the
+        existing ``invoices``/``findings`` aggregates are reused — no new
+        tables, columns or runtime dependencies.
+        """
+        rows_out = self._workload_rollup_multi(
+            ["COALESCE(i.entity, 'default')", "COALESCE(i.cost_center, '')"],
+            ["entity", "cost_center"],
+            settings,
+            entities,
+            cost_centers,
+            review_minutes,
+            hourly_rate,
+        )
+        rows_out.sort(
+            key=lambda entry: (
+                -entry["open_amount"],
+                entry["entity"] or "",
+                entry["cost_center"] or "",
+            )
+        )
+        return {
+            "cost_centers": rows_out,
+            "totals": self._rollup_totals(rows_out, ["entity", "cost_center"]),
         }
 
     def stats_by_supplier(

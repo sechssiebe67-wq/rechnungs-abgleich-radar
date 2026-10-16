@@ -29,6 +29,15 @@ zusätzlich eine **Lieferanten-Sicht** (`by_supplier_rollup`), die die exakt
 gleiche Frage — offene Prüflast plus realisierter ROI — **je Lieferant**
 beantwortet und mit einer `totals`-Summenzeile abschließt.
 
+Für die **Kostenstellen-Controller**, die den Backlog tatsächlich abarbeiten,
+kommt eine dritte konsolidierte Sicht hinzu: `by_cost_center_rollup` beantwortet
+dieselbe Frage je **`(Gesellschaft, Kostenstelle)`** — *„Welche Kostenstelle
+bindet als Nächstes Kapazität, und was hat sie dem Konzern schon gespart?“* —
+mit offener Prüflast plus realisierter ROI und `totals`-Summenzeile. Damit
+ergänzt sie `by_entity_rollup` (Konzern/Gesellschaft) und `by_supplier_rollup`
+(Einkauf) um die operative Kostenstellen-Achse, ohne dass die Weboberfläche
+geöffnet werden muss.
+
 Der **ROI-Nachweis** (`GET /api/stats/roi`) macht diesen Nutzen für den Preistest
 in Euro greifbar: Er rechnet bestätigte Treffer in vermiedenen Prüfaufwand und
 vermiedene Fehlzahlungen um — je Lieferant, **je Gesellschaft** und zusätzlich
@@ -80,8 +89,13 @@ Prüflast direkt je Lieferant ansprechen, ohne die Liste manuell zu filtern.
 Zusätzlich liefert der **Wochen-Digest** diese Sicht als Block
 `by_supplier_rollup` direkt mit: offene Prüflast und realisierter ROI je
 Lieferant plus `totals`-Summenzeile — so beantwortet bereits die Montags-Nachricht
-die Einkaufs-Frage nach der höchsten offenen Prüflast je Lieferant. Derselbe
-Digest trägt mit `by_supplier_backlog_trend` außerdem die **zeitliche
+die Einkaufs-Frage nach der höchsten offenen Prüflast je Lieferant. Für die
+**Kostenstellen-Controller**, die den Backlog abarbeiten, trägt derselbe Digest
+außerdem `by_cost_center_rollup`: dieselbe konsolidierte Sicht je
+`(Gesellschaft, Kostenstelle)` mit `totals`-Summenzeile, sodass die
+Montags-Nachricht die operative Frage *„Welche Kostenstelle bindet als Nächstes
+Kapazität, und was hat sie dem Konzern schon gespart?“* direkt beantwortet.
+Derselbe Digest trägt mit `by_supplier_backlog_trend` außerdem die **zeitliche
 Entwicklung** je Lieferant (neuester Monat gegen Vormonat, `delta_open_amount`,
 gebundener Prüfaufwand und die Rechnung, die den Rückstand konzentriert) — damit
 sieht der Einkauf ohne Web-UI, welcher Lieferant über die letzten Monate
@@ -561,10 +575,43 @@ persistentem Speicher.
     `by_entity_rollup` und aggregiert über dieselbe Rechnungsmenge.
   - Über denselben Schalter `?rollup=false` werden `by_entity_rollup` und
     `by_supplier_rollup` **gemeinsam** weggelassen; ohne Angabe liefert der
-   Digest beide. JSON und die HTML-Tabelle „Lieferanten-Rollup“ inkl.
-   Summenzeile zeigen den Block standardmäßig. Rein additive,
-   rückwärtskompatible Erweiterung: keine neuen Tabellen, Spalten, Endpunkte
-   oder Laufzeit-Abhängigkeiten.
+    Digest beide. JSON und die HTML-Tabelle „Lieferanten-Rollup“ inkl.
+    Summenzeile zeigen den Block standardmäßig. Rein additive,
+    rückwärtskompatible Erweiterung: keine neuen Tabellen, Spalten, Endpunkte
+    oder Laufzeit-Abhängigkeiten.
+- **Kostenstellen-Rollup im Wochen-Digest** (`by_cost_center_rollup`): Für die
+  **Kostenstellen-Controller**, die den Backlog tatsächlich abarbeiten, trägt
+  derselbe Digest die konsolidierte Sicht **je `(Gesellschaft, Kostenstelle)`**
+  und beantwortet damit ohne Web-UI: *Welche Kostenstelle bindet als Nächstes
+  Kapazität, und was hat sie dem Konzern schon gespart?* Der Block spiegelt
+  `by_entity_rollup` exakt, gruppiert aber zusätzlich nach der Kostenstelle.
+  - Je Zeile exakt die Felder `entity`, `cost_center`, `open_finding_count`,
+    `open_amount`, `open_review_minutes`, `open_review_cost_eur`, `confirmed`,
+    `false_alarm`, `precision`, `avoided_review_cost_eur` und
+    `avoided_mispayment_eur` — dieselbe Feldstruktur wie `by_entity_rollup`
+    (`ROLLUP_FIELDS` in `src/radar/db.py`) plus den zweiten Gruppenschlüssel
+    `cost_center`. Rechnungen mit leerer Kostenstelle werden konsistent zu
+    `by_cost_center` unter `cost_center == ""` gruppiert.
+  - Der Block ist `{"cost_centers": [...], "totals": {...}}`. Sortierung
+    deterministisch: absteigend nach `open_amount`, bei Gleichstand aufsteigend
+    nach `entity`, dann aufsteigend nach `cost_center`. `totals` trägt dieselben
+    Felder mit `entity == None` **und** `cost_center == None`, summiert exakt die
+    gelieferten Zeilen und berechnet `precision` neu aus den aggregierten
+    Zählern (nie gemittelt). Damit gilt `totals.open_amount ==` Gesamtbetrag des
+    Digests (`/api/stats`) und `totals.avoided_*` == die globalen ROI-Werte für
+    denselben Filter.
+  - Der Block berücksichtigt dieselben `?entity=`/`?cost_center=`-Filter
+    (UND-verknüpft) und ROI-Annahmen (`?review_minutes=`/`?hourly_rate=`) wie
+    `by_entity_rollup` und aggregiert über dieselbe Rechnungsmenge. Ein
+    unbekannter Filterwert liefert `200` mit leerer `cost_centers`-Liste und
+    genullter `totals`-Zeile, niemals `400`.
+  - `?rollup=false` lässt `by_cost_center_rollup` **gemeinsam** mit
+    `by_entity_rollup`, `by_supplier_rollup` und `by_supplier_backlog_trend`
+    weg; ohne Angabe liefert der Digest alle Blöcke. JSON, HTML-Tabelle
+    „Kostenstellen-Rollup“ inkl. Summenzeile, Webhook-Payload und Weboberfläche
+    zeigen den Block standardmäßig. Rein additive, rückwärtskompatible
+    Erweiterung: keine neuen Tabellen, Spalten, Endpunkte oder
+    Laufzeit-Abhängigkeiten.
 - **Lieferanten-Backlog-Trend im Wochen-Digest** (`by_supplier_backlog_trend`):
   Der Digest beantwortet dieselbe Einkaufs-Frage wie
   `GET /api/review-workload/by-supplier/timeseries`, aber **direkt in der
@@ -607,7 +654,7 @@ persistentem Speicher.
     Werte → `200` mit leerer `suppliers`-Liste und genullter `totals`-Zeile)
     wirken konsistent zur Zeitreihe. Ein leerer Block rendert in HTML keine
     Tabelle; `?rollup=false` lässt `by_supplier_backlog_trend` **gemeinsam** mit
-    `by_entity_rollup` und `by_supplier_rollup` weg.
+    `by_entity_rollup`, `by_supplier_rollup` und `by_cost_center_rollup` weg.
   - JSON, HTML-Tabelle (Lieferant, neuester Monat, Δ offenes Volumen, offener
     Aufwand EUR, Top-Rechnung), Webhook-Payload und Weboberfläche zeigen den
     Block standardmäßig. Rein additive, rückwärtskompatible Erweiterung.
@@ -785,13 +832,17 @@ priorisiert die Freigabe-Entscheidung.
     `/api/review-workload` und `/api/stats/roi` und sind über
     `?review_minutes=`/`?hourly_rate=` als What-if überschreibbar. Der Block
     erscheint in JSON, HTML, Webhook-Payload und Weboberfläche und lässt sich
-    über `?rollup=false` abschalten (dann byte-identisch zu vorher). Damit
-    beantwortet die Montags-Nachricht ohne Web-UI, wo der Konzern steht und
-    welche Gesellschaft als Nächstes Aufmerksamkeit braucht. **Nächster
-    Schritt:** dieselbe konsolidierte Sicht zusätzlich je Kostenstelle (und
-    optional als Zeitverlauf im Digest) ausweisen sowie die Reihenfolge im
-    Digest direkt nach gebundenem offenem Prüfaufwand (`open_review_cost_eur`)
-    statt nur nach Volumen priorisieren.
+     über `?rollup=false` abschalten (dann byte-identisch zu vorher). Damit
+     beantwortet die Montags-Nachricht ohne Web-UI, wo der Konzern steht und
+     welche Gesellschaft als Nächstes Aufmerksamkeit braucht. **Umgesetzt:**
+     zusätzlich weist `by_cost_center_rollup` dieselbe konsolidierte Sicht je
+     `(Gesellschaft, Kostenstelle)` aus (offene Last + realisierter ROI plus
+     `totals`), sodass der Digest auch die dritte operative Frage *„Welche
+     Kostenstelle bindet als Nächstes Kapazität, und was hat sie dem Konzern
+     schon gespart?“* ohne Web-UI beantwortet. **Nächster Schritt:** dieselbe
+     konsolidierte Sicht optional als Zeitverlauf im Digest ausweisen sowie die
+     Reihenfolge im Digest direkt nach gebundenem offenem Prüfaufwand
+     (`open_review_cost_eur`) statt nur nach Volumen priorisieren.
 11. **Operative Lieferanten-Sicht als Zeitreihe — umgesetzt.** Mit
     `GET /api/review-workload/by-supplier/timeseries` beantwortet das Radar die
     Einkaufs-Frage *„welcher Lieferant baut über die Monate Rückstand auf, und
@@ -880,7 +931,12 @@ steht und welche Gesellschaft als Nächstes Aufmerksamkeit braucht; der
 **Lieferanten-Rollup** (`by_supplier_rollup`) ergänzt dieselbe Sicht je Lieferant
 für den Einkauf — offene Last, realisierter ROI und `totals`-Summenzeile —,
 sodass die Montags-Mail zusätzlich „welcher Lieferant bindet aktuell die meiste
-offene Prüflast?“ direkt beantwortet. Über `?rollup=false` bleiben beide Rollups
+offene Prüflast?“ direkt beantwortet. Der **Kostenstellen-Rollup**
+(`by_cost_center_rollup`) schließt die operative Lücke der Kostenstellen-
+Controller: Dieselbe Montags-Mail weist offene Last und realisierten ROI je
+`(Gesellschaft, Kostenstelle)` mit `totals`-Summenzeile aus und beantwortet
+damit *„Welche Kostenstelle bindet als Nächstes Kapazität, und was hat sie dem
+Konzern schon gespart?“* ohne Web-UI. Über `?rollup=false` bleiben alle Rollups
 gemeinsam entfernbar und der bisherige Digest unverändert abrufbar. So misst der
 Test die tatsächliche Nutzung und die Precision weiterhin über das Feedback in
 der Oberfläche.
