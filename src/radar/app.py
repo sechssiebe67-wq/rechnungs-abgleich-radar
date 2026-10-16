@@ -30,6 +30,7 @@ from .db import (
     Store,
 )
 from .digest import render_html, weekly_digest
+from .models import FINDING_LABELS
 from .notify import deliver_digest
 from .ingest import (
     invoice_from_dict,
@@ -210,6 +211,22 @@ def _review_status(query: Dict[str, List[str]]) -> str:
             "review_status must be one of: %s" % ", ".join(REVIEW_STATUS_VALUES)
         )
     return raw
+
+
+def _finding_types(query: Dict[str, List[str]]) -> List[str]:
+    """Read the optional, repeated ``finding_type`` filter for findings.
+
+    Values are trimmed, de-duplicated and empty entries ignored (like the other
+    repeatable filters). Every remaining value must be a known finding type
+    (:data:`FINDING_LABELS`); unknown values raise :class:`ValueError` (mapped
+    to ``400`` by the dispatcher). An empty result means "no filter".
+    """
+    values = _query_list(query, "finding_type")
+    unknown = [value for value in values if value not in FINDING_LABELS]
+    if unknown:
+        options = ", ".join(sorted(FINDING_LABELS))
+        raise ValueError("finding_type must be one of: %s" % options)
+    return values
 
 
 class Router:
@@ -645,6 +662,8 @@ class RadarHandler(BaseHTTPRequestHandler):
         invoice_id = query.get("invoice_id", [None])[0]
         entities = _query_list(query, "entity") or None
         review_status = _review_status(query)
+        finding_types = _finding_types(query) or None
+        suppliers = _query_list(query, "supplier") or None
         limit = _non_negative_query_int(query, "limit")
         offset = _non_negative_query_int(query, "offset")
         sort = _finding_sort(query)
@@ -654,6 +673,8 @@ class RadarHandler(BaseHTTPRequestHandler):
             "invoice_id": int(invoice_id) if invoice_id else None,
             "entities": entities,
             "review_status": review_status,
+            "finding_types": finding_types,
+            "suppliers": suppliers,
         }
         findings = self.store.list_findings(
             limit=limit, offset=offset, order_by=sort, **filters
@@ -669,6 +690,8 @@ class RadarHandler(BaseHTTPRequestHandler):
                 "limit": limit,
                 "offset": offset,
                 "sort": sort or DEFAULT_FINDING_ORDER,
+                "finding_types": finding_types or [],
+                "suppliers": suppliers or [],
             }
         )
 
@@ -677,11 +700,15 @@ class RadarHandler(BaseHTTPRequestHandler):
         min_amount = query.get("min_amount", [None])[0]
         entities = _query_list(query, "entity") or None
         review_status = _review_status(query)
+        finding_types = _finding_types(query) or None
+        suppliers = _query_list(query, "supplier") or None
         findings = self.store.list_findings(
             status=status,
             min_amount=float(min_amount) if min_amount else None,
             entities=entities,
             review_status=review_status,
+            finding_types=finding_types,
+            suppliers=suppliers,
         )
         rows = [
             [finding.get(column) for column in FINDING_EXPORT_COLUMNS]

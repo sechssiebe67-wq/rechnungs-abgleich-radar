@@ -151,11 +151,24 @@ NO_POSITION_LABEL = "(ohne Position)"
 # ``ORDER BY`` fragments. The default (``amount_desc``) preserves the original
 # behaviour. A secondary ``id`` key keeps the order deterministic for ties and
 # for stable pagination.
+#
+# ``article_asc``/``article_desc`` order by the normalized article of the
+# owning invoice position (``i2.article_norm``) and require the extra
+# ``LEFT JOIN invoice_items i2`` added by :meth:`Store.list_findings`.
+# Findings without a position (``i2.article_norm IS NULL``, e.g. ``missing_po``
+# or ``duplicate``) sort last via the leading ``IS NULL`` flag — independent of
+# the direction — so they surface under the ``(ohne Position)`` label at the
+# end. ``supplier_asc``/``supplier_desc`` order by the owning invoice's
+# supplier.
 FINDING_ORDER_BY = {
     "amount_desc": "f.amount DESC, f.id ASC",
     "amount_asc": "f.amount ASC, f.id ASC",
     "created_at_desc": "f.created_at DESC, f.id DESC",
     "created_at_asc": "f.created_at ASC, f.id ASC",
+    "article_asc": "(i2.article_norm IS NULL) ASC, i2.article_norm ASC, f.id ASC",
+    "article_desc": "(i2.article_norm IS NULL) ASC, i2.article_norm DESC, f.id ASC",
+    "supplier_asc": "i.supplier ASC, f.id ASC",
+    "supplier_desc": "i.supplier DESC, f.id ASC",
 }
 DEFAULT_FINDING_ORDER = "amount_desc"
 
@@ -842,8 +855,16 @@ class Store:
         entities: Optional[List[str]],
         cost_centers: Optional[List[str]],
         review_status: Optional[str] = None,
+        finding_types: Optional[List[str]] = None,
+        suppliers: Optional[List[str]] = None,
     ) -> tuple:
-        """Build the shared WHERE clauses/params for findings queries."""
+        """Build the shared WHERE clauses/params for findings queries.
+
+        ``finding_types`` restricts to the given ``f.finding_type`` values and
+        ``suppliers`` to the owning invoice's ``i.supplier``; within one list the
+        values are OR-combined (``IN (...)``) while the different filters are
+        AND-combined. ``None``/empty lists apply no filter.
+        """
         clauses: List[str] = []
         params: List[object] = []
         if entities:
@@ -854,6 +875,14 @@ class Store:
             placeholders = ", ".join("?" for _ in cost_centers)
             clauses.append("i.cost_center IN (%s)" % placeholders)
             params.extend(cost_centers)
+        if finding_types:
+            placeholders = ", ".join("?" for _ in finding_types)
+            clauses.append("f.finding_type IN (%s)" % placeholders)
+            params.extend(finding_types)
+        if suppliers:
+            placeholders = ", ".join("?" for _ in suppliers)
+            clauses.append("i.supplier IN (%s)" % placeholders)
+            params.extend(suppliers)
         if status:
             clauses.append("f.status = ?")
             params.append(status)
@@ -890,6 +919,8 @@ class Store:
         entities: Optional[List[str]] = None,
         cost_centers: Optional[List[str]] = None,
         review_status: Optional[str] = None,
+        finding_types: Optional[List[str]] = None,
+        suppliers: Optional[List[str]] = None,
         limit: Optional[int] = None,
         offset: Optional[int] = None,
         order_by: Optional[str] = None,
@@ -911,10 +942,18 @@ class Store:
         ``reviewed`` keeps those of invoices whose findings all have feedback,
         and ``None``/``all`` applies no filter (backwards compatible).
 
+        ``finding_types`` and ``suppliers`` restrict to an ``IN (...)`` set of
+        ``f.finding_type`` resp. owning-invoice ``i.supplier`` values. Within one
+        parameter the values are OR-combined; the two filters and all other
+        filters are AND-combined. ``None``/empty lists apply no filter and are
+        fully backwards compatible.
+
         ``order_by`` must be one of :data:`FINDING_ORDER_BY`; ``None`` keeps the
         documented default ordering (amount descending) and is fully backwards
         compatible. ``limit``/``offset`` are applied only when provided, so an
-        unpaged call returns exactly the rows it always did.
+        unpaged call returns exactly the rows it always did. The article orders
+        add a ``LEFT JOIN invoice_items i2`` so findings without a position sort
+        last.
         """
         if order_by is None:
             order_by = DEFAULT_FINDING_ORDER
@@ -925,18 +964,28 @@ class Store:
         if offset is not None and int(offset) < 0:
             raise ValueError("offset must be >= 0")
 
+        order_fragment = FINDING_ORDER_BY[order_by]
         query = (
             "SELECT f.*, i.entity AS entity, i.cost_center AS cost_center, "
             "i.supplier AS supplier, i.invoice_number AS invoice_number "
             "FROM findings f "
             "LEFT JOIN invoices i ON i.id = f.invoice_id"
         )
+        if "i2." in order_fragment:
+            query += " LEFT JOIN invoice_items i2 ON f.invoice_item_id = i2.id"
         clauses, params = self._finding_filters(
-            status, min_amount, invoice_id, entities, cost_centers, review_status
+            status,
+            min_amount,
+            invoice_id,
+            entities,
+            cost_centers,
+            review_status,
+            finding_types,
+            suppliers,
         )
         if clauses:
             query += " WHERE " + " AND ".join(clauses)
-        query += " ORDER BY " + FINDING_ORDER_BY[order_by]
+        query += " ORDER BY " + order_fragment
         if limit is not None:
             query += " LIMIT ?"
             params.append(int(limit))
@@ -958,6 +1007,8 @@ class Store:
         entities: Optional[List[str]] = None,
         cost_centers: Optional[List[str]] = None,
         review_status: Optional[str] = None,
+        finding_types: Optional[List[str]] = None,
+        suppliers: Optional[List[str]] = None,
     ) -> int:
         """Count findings matching the same filters as :meth:`list_findings`.
 
@@ -969,7 +1020,14 @@ class Store:
             "LEFT JOIN invoices i ON i.id = f.invoice_id"
         )
         clauses, params = self._finding_filters(
-            status, min_amount, invoice_id, entities, cost_centers, review_status
+            status,
+            min_amount,
+            invoice_id,
+            entities,
+            cost_centers,
+            review_status,
+            finding_types,
+            suppliers,
         )
         if clauses:
             query += " WHERE " + " AND ".join(clauses)

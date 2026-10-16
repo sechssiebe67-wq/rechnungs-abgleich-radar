@@ -89,6 +89,19 @@ class ClientControlStructureTests(unittest.TestCase):
             for suffix in ("sort", "range", "prev", "next", "error"):
                 self.assertIn('id="%s-%s"' % (prefix, suffix), source)
 
+    def test_findings_filter_controls_are_present(self):
+        source = _read_index()
+        self.assertIn('id="findings-type-filter"', source)
+        self.assertIn('id="findings-supplier-filter"', source)
+        # The finding-type options mirror the backend labels (FINDING_LABELS).
+        for label in (
+            "Fehlende Bestellreferenz",
+            "Preisdrift",
+            "Preisabweichung",
+        ):
+            self.assertIn(label, source)
+        self.assertIn("/api/suppliers", source)
+
     def test_audit_position_section_is_present(self):
         source = _read_index()
         self.assertIn("Positionen", source)
@@ -220,6 +233,44 @@ class ClientQueryBuildingTests(unittest.TestCase):
         source = _read_index()
         self.assertIn("extra: invoiceFilters(selectedEntities())", source)
         self.assertIn("const entities = selectedEntities();", source)
+
+    @unittest.skipUnless(
+        shutil.which("node"), "node is required to exercise the JS helpers"
+    )
+    def test_findings_filters_carry_type_and_supplier_selection(self):
+        source = _read_index()
+        program = (
+            _extract_function(source, "findingsFilters")
+            + "\nprocess.stdout.write(JSON.stringify(["
+            + "findingsFilters('open', ['DE01'], ['missing_po'], ['ACME GmbH']),"
+            + "findingsFilters('all', [], [], [])"
+            + "]));"
+        )
+        out = _run_js(program)
+        self.assertEqual(out[0]["finding_type"], ["missing_po"])
+        self.assertEqual(out[0]["supplier"], ["ACME GmbH"])
+        self.assertEqual(out[0]["status"], "open")
+        self.assertEqual(out[1]["finding_type"], [])
+        self.assertEqual(out[1]["supplier"], [])
+
+    @unittest.skipUnless(
+        shutil.which("node"), "node is required to exercise the JS helpers"
+    )
+    def test_finding_type_and_supplier_are_repeated(self):
+        source = _read_index()
+        program = (
+            _extract_function(source, "buildListQuery")
+            + "\nprocess.stdout.write(JSON.stringify(buildListQuery("
+            + "{ sort: 'article_asc', limit: 25, offset: 0,"
+            + " extra: { status: 'open', finding_type: ['missing_po', 'price_drift'],"
+            + " supplier: ['ACME GmbH'] } })));"
+        )
+        out = _run_js(program)
+        self.assertEqual(
+            out,
+            "?status=open&finding_type=missing_po&finding_type=price_drift"
+            "&supplier=ACME%20GmbH&sort=article_asc&limit=25&offset=0",
+        )
 
     @unittest.skipUnless(
         shutil.which("node"), "node is required to exercise the JS helpers"
