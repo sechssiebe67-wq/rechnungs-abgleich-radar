@@ -11,10 +11,15 @@ from .db import Store
 from .models import FINDING_LABELS
 
 
-def empty_rollup() -> dict:
-    """Return a well-formed, zeroed ``by_entity_rollup`` block."""
+def empty_rollup(key_name: str = "entity") -> dict:
+    """Return a well-formed, zeroed ``by_entity_rollup`` block.
+
+    ``key_name`` selects the group key of the ``totals`` row (``entity`` for the
+    per-society rollup, ``supplier`` for the per-supplier rollup), so both blocks
+    share one zeroed shape.
+    """
     totals = {
-        "entity": None,
+        key_name: None,
         "open_finding_count": 0,
         "open_amount": 0.0,
         "open_review_minutes": 0.0,
@@ -26,6 +31,11 @@ def empty_rollup() -> dict:
         "avoided_mispayment_eur": 0.0,
     }
     return {"entities": [], "totals": totals}
+
+
+def empty_supplier_rollup() -> dict:
+    """Return a well-formed, zeroed ``by_supplier_rollup`` block."""
+    return empty_rollup("supplier")
 
 
 def weekly_digest(
@@ -61,16 +71,19 @@ def weekly_digest(
     ``supplier``; empty values stay ``""`` and the group is kept.
 
     When ``rollup`` is true (the default) the response additionally carries the
-    consolidated management view ``by_entity_rollup``: ``{"entities": [...],
-    "totals": {...}}`` with, per society, the open review workload
-    (``open_finding_count``, ``open_amount``, ``open_review_minutes``,
-    ``open_review_cost_eur``) and the realized ROI (``confirmed``,
-    ``false_alarm``, ``precision``, ``avoided_review_cost_eur``,
+    consolidated management views ``by_entity_rollup`` and ``by_supplier_rollup``:
+    each is ``{"entities": [...], "totals": {...}}`` with, per society resp.
+    supplier, the open review workload (``open_finding_count``, ``open_amount``,
+    ``open_review_minutes``, ``open_review_cost_eur``) and the realized ROI
+    (``confirmed``, ``false_alarm``, ``precision``, ``avoided_review_cost_eur``,
     ``avoided_mispayment_eur``), plus a ``totals`` row summing those fields over
-    the reported societies. Unlike the count-only breakdown it spans all
-    invoices matching the filters (not just the digest ``limit``) so its
-    ``open_amount`` matches ``GET /api/stats``. Passing ``rollup=False`` omits
-    the key entirely to reproduce the pre-rollup payload.
+    the reported groups. Unlike the count-only breakdown they span all invoices
+    matching the filters (not just the digest ``limit``) so their ``open_amount``
+    matches ``GET /api/stats``. ``by_supplier_rollup`` uses ``supplier`` as its
+    group key and is sorted by ``open_amount`` descending, then
+    ``open_finding_count`` descending, then ``supplier`` ascending. Both blocks
+    are gated by the same ``rollup`` switch; passing ``rollup=False`` omits them
+    entirely to reproduce the pre-rollup payload.
     """
     findings = store.list_findings(
         status="open", entities=entities, cost_centers=cost_centers
@@ -100,6 +113,9 @@ def weekly_digest(
     }
     if rollup:
         digest["by_entity_rollup"] = store.entity_rollup(
+            settings, entities, cost_centers, review_minutes, hourly_rate
+        )
+        digest["by_supplier_rollup"] = store.supplier_rollup(
             settings, entities, cost_centers, review_minutes, hourly_rate
         )
     return digest
@@ -240,6 +256,67 @@ def _rollup_html(digest: dict) -> str:
     )
 
 
+def _supplier_rollup_html(digest: dict) -> str:
+    """Render the per-supplier workload/ROI rollup with a totals row."""
+    rollup = digest.get("by_supplier_rollup") or {}
+    rows = rollup.get("entities") or []
+    totals = rollup.get("totals")
+    if not rows:
+        return ""
+
+    def _number(value):
+        if value is None:
+            return "n/a"
+        return "%.2f" % float(value)
+
+    def _precision(value):
+        if value is None:
+            return "n/a"
+        return "%.0f%%" % (float(value) * 100)
+
+    body_rows = [(row, False) for row in rows]
+    if totals is not None:
+        body_rows.append((dict(totals, supplier="Gesamt"), True))
+    cells: List[str] = []
+    for row, is_total in body_rows:
+        label = html.escape(str(row.get("supplier") or "Gesamt"))
+        if is_total:
+            label = "<strong>%s</strong>" % label
+        cells.append(
+            "<tr>"
+            "<td>{supplier}</td>"
+            "<td style='text-align:right'>{open_count}</td>"
+            "<td style='text-align:right'>{open_amount:.2f} EUR</td>"
+            "<td style='text-align:right'>{open_minutes} min</td>"
+            "<td style='text-align:right'>{open_cost} EUR</td>"
+            "<td style='text-align:right'>{avoided_cost} EUR</td>"
+            "<td style='text-align:right'>{avoided_mis} EUR</td>"
+            "<td style='text-align:right'>{precision}</td>"
+            "</tr>".format(
+                supplier=label,
+                open_count=int(row.get("open_finding_count", 0) or 0),
+                open_amount=float(row.get("open_amount", 0) or 0),
+                open_minutes=_number(row.get("open_review_minutes")),
+                open_cost=_number(row.get("open_review_cost_eur")),
+                avoided_cost=_number(row.get("avoided_review_cost_eur")),
+                avoided_mis=_number(row.get("avoided_mispayment_eur")),
+                precision=_precision(row.get("precision")),
+            )
+        )
+    header = (
+        "<tr><th>Lieferant</th><th>Offene Findings</th><th>Offenes Volumen</th>"
+        "<th>Aufwand (min)</th><th>Aufwand (EUR)</th>"
+        "<th>Vermiedener Aufwand (EUR)</th>"
+        "<th>Vermiedene Fehlzahlung (EUR)</th><th>Precision</th></tr>"
+    )
+    return (
+        "<h3>Lieferanten-Rollup (offene Last und ROI je Lieferant)</h3>\n"
+        "<table border=\"1\" cellpadding=\"6\" cellspacing=\"0\" width=\"100%%\">\n"
+        "<thead>%s</thead>\n<tbody>\n%s\n</tbody></table>"
+        % (header, "\n".join(cells))
+    )
+
+
 def render_html(digest: dict) -> str:
     rows: List[str] = []
     for finding in digest["findings"]:
@@ -278,6 +355,7 @@ def render_html(digest: dict) -> str:
     precision_text = "n/a" if precision is None else "%.0f%%" % (precision * 100)
     breakdown = _breakdown_html(digest)
     rollup = _rollup_html(digest)
+    supplier_rollup = _supplier_rollup_html(digest)
     return """<!doctype html>
 <html lang="de">
 <head><meta charset="utf-8"><title>Rechnungs-Abgleich-Radar — Wochen-Digest</title></head>
@@ -290,6 +368,7 @@ def render_html(digest: dict) -> str:
 <p>Rechnungen: {invoices} · Findings: {findings} · Precision (Feedback):
 {precision}</p>
 {rollup}
+{supplier_rollup}
 {breakdown}
 <table border="1" cellpadding="6" cellspacing="0" width="100%">
 <thead><tr><th>Gesellschaft</th><th>Art</th><th>Begründung</th><th>Betrag</th><th>Referenz</th></tr></thead>
@@ -309,6 +388,7 @@ Rechnungs-Abgleich-Radar. Zahlungsausführung ist nicht Teil dieses Systems.</p>
         findings=stats.get("findings", 0),
         precision=precision_text,
         rollup=rollup,
+        supplier_rollup=supplier_rollup,
         breakdown=breakdown,
         body=body,
     )

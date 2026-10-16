@@ -16,7 +16,12 @@ from typing import Callable, Dict, List, Optional
 
 from .config import Settings
 from .db import Store
-from .digest import empty_rollup, render_html, weekly_digest
+from .digest import (
+    empty_rollup,
+    empty_supplier_rollup,
+    render_html,
+    weekly_digest,
+)
 
 WEBHOOK_SUBJECT = "Rechnungs-Abgleich-Radar — Wochen-Digest"
 WEBHOOK_TIMEOUT_SECONDS = 10
@@ -59,6 +64,8 @@ def _webhook_payload(digest: dict) -> dict:
         "by_cost_center": list(digest.get("by_cost_center") or []),
         "by_supplier": list(digest.get("by_supplier") or []),
         "by_entity_rollup": digest.get("by_entity_rollup") or empty_rollup(),
+        "by_supplier_rollup": digest.get("by_supplier_rollup")
+        or empty_supplier_rollup(),
         "top_findings": top,
     }
 
