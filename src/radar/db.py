@@ -993,6 +993,193 @@ class Store:
             },
         }
 
+    def review_workload_by_supplier_timeseries(
+        self,
+        settings: Optional[Settings] = None,
+        months: Optional[int] = None,
+        entities: Optional[List[str]] = None,
+        cost_centers: Optional[List[str]] = None,
+        review_minutes: Optional[float] = None,
+        hourly_rate: Optional[float] = None,
+    ) -> dict:
+        """Open review load per (month, supplier) over time.
+
+        Operative procurement view answering *which supplier is accumulating
+        backlog over the months, and how much effort does it bind?* Invoices are
+        bucketed by ``strftime('%Y-%m', invoices.created_at)`` and
+        ``invoices.supplier``; only invoices with at least one still-open finding
+        enter the report (computed with a single ``JOIN`` aggregate per invoice —
+        no N+1).
+
+        Each row carries ``month``, ``supplier``, ``invoice_count`` (invoices with
+        at least one open finding), ``open_finding_count``, ``open_amount`` (sum
+        of the amounts of open findings), the bound effort ``open_review_minutes``
+        / ``open_review_cost_eur`` (using exactly the ROI assumptions:
+        ``open_finding_count × review_minutes_per_finding`` and
+        ``open_review_minutes / 60 × hourly_rate``, rounded to two decimals) and
+        ``top_invoice`` — the invoice with the largest ``open_amount`` in the
+        bucket (ties: ``open_finding_count`` descending, then ``id`` ascending)
+        with ``id``, ``invoice_number``, ``entity``, ``cost_center``,
+        ``open_finding_count`` and ``open_amount``. ``top_invoice`` is ``None``
+        for a bucket without a qualifying invoice.
+
+        Rows are sorted by ``open_amount`` descending, then ``supplier`` and
+        ``month`` ascending for deterministic output. ``totals`` mirrors the row
+        shape (``month``/``supplier`` are ``None``) and is the exact sum over the
+        returned rows (``top_invoice`` = the global largest). ``parameters``
+        echoes the effective assumptions.
+
+        The ``months`` window (default
+        :data:`DEFAULT_REVIEW_WORKLOAD_TIMESERIES_MONTHS`, must be ``>= 1``)
+        keeps only the newest ``months`` calendar months present in the filtered
+        data (anchor: newest month). ``entities``/``cost_centers`` restrict the
+        view like :meth:`list_invoices` (AND-combined); unknown values are not an
+        error and simply yield an empty ``rows`` list. ``review_minutes`` and
+        ``hourly_rate`` override the settings for what-if analyses.
+        """
+        base = settings or Settings()
+        minutes = base.review_minutes_per_finding if review_minutes is None else float(
+            review_minutes
+        )
+        rate = (
+            base.review_hourly_rate_eur if hourly_rate is None else float(hourly_rate)
+        )
+        if minutes < 0:
+            raise ValueError("review_minutes must be >= 0")
+        if rate < 0:
+            raise ValueError("hourly_rate must be >= 0")
+        window = (
+            DEFAULT_REVIEW_WORKLOAD_TIMESERIES_MONTHS
+            if months is None
+            else int(months)
+        )
+        if window < 1:
+            raise ValueError("months must be >= 1")
+
+        clauses: List[str] = []
+        params: List[object] = []
+        if entities:
+            placeholders = ", ".join("?" for _ in entities)
+            clauses.append("i.entity IN (%s)" % placeholders)
+            params.extend(entities)
+        if cost_centers:
+            placeholders = ", ".join("?" for _ in cost_centers)
+            clauses.append("i.cost_center IN (%s)" % placeholders)
+            params.extend(cost_centers)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+
+        with self.connect() as conn:
+            rows = conn.execute(
+                """SELECT strftime('%%Y-%%m', i.created_at) AS month,
+                          i.supplier AS supplier,
+                          i.id AS id,
+                          i.invoice_number AS invoice_number,
+                          COALESCE(i.entity, 'default') AS entity,
+                          COALESCE(i.cost_center, '') AS cost_center,
+                          COALESCE(SUM(CASE WHEN f.id IS NOT NULL AND f.feedback IS NULL
+                                            THEN 1 ELSE 0 END), 0) AS open_finding_count,
+                          COALESCE(SUM(CASE WHEN f.status = 'open'
+                                            THEN f.amount ELSE 0 END), 0) AS open_amount
+                   FROM invoices i
+                   JOIN findings f ON f.invoice_id = i.id
+                   %s
+                   GROUP BY i.id
+                   HAVING open_finding_count > 0"""
+                % where,
+                params,
+            ).fetchall()
+
+        months_present = [row["month"] for row in rows if row["month"]]
+        cutoff = None
+        if months_present:
+            cutoff = _shift_month(max(months_present), -(window - 1))
+
+        groups: dict = {}
+        kept_invoices: List[dict] = []
+        for row in rows:
+            month = row["month"]
+            if not month:
+                continue
+            if cutoff is not None and month < cutoff:
+                continue
+            supplier = row["supplier"]
+            invoice = {
+                "id": int(row["id"]),
+                "invoice_number": row["invoice_number"],
+                "entity": row["entity"] or "default",
+                "cost_center": row["cost_center"] or "",
+                "open_finding_count": int(row["open_finding_count"]),
+                "open_amount": round(float(row["open_amount"]), 2),
+            }
+            kept_invoices.append(invoice)
+            key = (month, supplier)
+            group = groups.get(key)
+            if group is None:
+                group = {
+                    "invoice_count": 0,
+                    "open_finding_count": 0,
+                    "open_amount": 0.0,
+                    "invoices": [],
+                }
+                groups[key] = group
+            group["invoice_count"] += 1
+            group["open_finding_count"] += invoice["open_finding_count"]
+            group["open_amount"] += invoice["open_amount"]
+            group["invoices"].append(invoice)
+
+        result_rows: List[dict] = []
+        for (month, supplier), group in groups.items():
+            open_count = group["open_finding_count"]
+            open_minutes = round(open_count * minutes, 2)
+            result_rows.append(
+                {
+                    "month": month,
+                    "supplier": supplier,
+                    "invoice_count": group["invoice_count"],
+                    "open_finding_count": open_count,
+                    "open_amount": round(group["open_amount"], 2),
+                    "open_review_minutes": open_minutes,
+                    "open_review_cost_eur": round(open_minutes / 60 * rate, 2),
+                    "top_invoice": _pick_top_invoice(group["invoices"]),
+                }
+            )
+        result_rows.sort(
+            key=lambda entry: (
+                -entry["open_amount"],
+                entry["supplier"] or "",
+                entry["month"],
+            )
+        )
+
+        total_minutes = round(
+            sum(entry["open_review_minutes"] for entry in result_rows), 2
+        )
+        totals = {
+            "month": None,
+            "supplier": None,
+            "invoice_count": sum(entry["invoice_count"] for entry in result_rows),
+            "open_finding_count": sum(
+                entry["open_finding_count"] for entry in result_rows
+            ),
+            "open_amount": round(
+                sum(entry["open_amount"] for entry in result_rows), 2
+            ),
+            "open_review_minutes": total_minutes,
+            "open_review_cost_eur": round(
+                sum(entry["open_review_cost_eur"] for entry in result_rows), 2
+            ),
+            "top_invoice": _pick_top_invoice(kept_invoices),
+        }
+        return {
+            "rows": result_rows,
+            "totals": totals,
+            "parameters": {
+                "months": window,
+                "review_minutes_per_finding": minutes,
+                "review_hourly_rate_eur": rate,
+            },
+        }
+
     def list_entities(self) -> List[str]:
         """Return the distinct, sorted entities occurring in invoices."""
         with self.connect() as conn:

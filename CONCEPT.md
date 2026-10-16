@@ -39,6 +39,16 @@ Neben dem vermiedenen Nutzen weist sie je Monat, Gesellschaft und Kostenstelle
 die noch **offenen Findings** und den daran gebundenen **Prüfaufwand**
 (`open_review_minutes`, `open_review_cost_eur`) aus.
 
+Ergänzend öffnet die **operative Lieferanten-Sicht** (`GET
+/api/review-workload/by-supplier/timeseries`) dasselbe Zeitreihen-Prinzip für
+den Einkauf: Sie beantwortet nicht nur, *welche Rechnung* oder *welche
+Gesellschaft/Kostenstelle* die meiste offene Prüflast bindet, sondern **welcher
+Lieferant über die Monate Rückstand aufbaut und wie viel Aufwand er bindet** —
+analog zur Prüf-Last-Zeitreihe, aber je `(Monat, Lieferant)` und zusätzlich je
+Gesellschaft/Kostenstelle gefiltert. So wird aus dem Reporting ein direktes
+Einkaufs-Gespräch („Lieferant X verursacht seit drei Monaten steigende offene
+Prüflast“), ohne die Weboberfläche manuell zu filtern.
+
 ## Intended users
 
 Finanz- und Kreditorenbuchhaltungs-Teams in KMU (5–50 Mitarbeitende) mit
@@ -58,7 +68,13 @@ Kostenstelle ausweist. Zusätzlich beantwortet die **Prüf-Last-Zeitreihe**
 sich die offene Prüflast über die letzten Monate entwickelt, und welche
 Gesellschaft oder Kostenstelle baut Rückstand auf?** Sie reiht die offene Last je
 `(Monat, Gesellschaft, Kostenstelle)` auf und nennt je Bucket die Rechnung, die
-den größten Teil davon bindet. Bei der Abarbeitung des Wochen-Digests und der
+den größten Teil davon bindet. Der **Einkauf** als sekundärer Konsument nutzt die
+**Prüf-Last je Lieferant (Zeitreihe)**
+(`GET /api/review-workload/by-supplier/timeseries`), um dieselbe Frage je
+`(Monat, Lieferant)` zu beantworten: *Welcher Lieferant baut über die Monate
+Rückstand auf, und wie viel Aufwand bindet er?* Damit lässt sich die offene
+Prüflast direkt je Lieferant ansprechen, ohne die Liste manuell zu filtern.
+Bei der Abarbeitung des Wochen-Digests und der
 Findings-Liste arbeiten sie zuerst die Rechnungen mit dem **größten offenen
 Prüfvolumen** ab (viele offene Findings bzw. hoher offener Betrag), weil dort pro
 Rechnung die meiste Arbeit gebündelt ist; die **Prüf-Last-Top-Liste**
@@ -209,10 +225,43 @@ persistentem Speicher.
     größte Rechnung). `parameters` weist `months`,
     `review_minutes_per_finding` und `review_hourly_rate_eur` aus.
   - `?months=` (Default `6`, `>= 1`, ungültig → `400`) beschränkt auf die
-    jüngsten N in den Daten vorkommenden Monate (Anker: neuester Monat),
+    jüngsten N in den Daten vorkommenden Monate (Anker: neuerster Monat),
     `?entity=`/`?cost_center=` filtern wiederholbar und UND-verknüpft wie
     `list_invoices`; unbekannte Filterwerte liefern `200` mit leerer Liste. Die
     Annahmen lassen sich über `?review_minutes=`/`?hourly_rate=` überschreiben.
+- **Prüf-Last je Lieferant (Zeitreihe)**
+  (`GET /api/review-workload/by-supplier/timeseries`): Die operative
+  Lieferanten-Sicht für den Einkauf — **welcher Lieferant baut über die Monate
+  Rückstand auf, und wie viel Aufwand bindet er?** Sie ist analog zur
+  bestehenden Prüf-Last-Zeitreihe aufgebaut, gruppiert aber je
+  `(Monat, Lieferant)` und lässt sich zusätzlich je Gesellschaft/Kostenstelle
+  filtern.
+  - Gruppiert wird je `strftime('%Y-%m', invoices.created_at)` als `month` und je
+    `invoices.supplier`. Nur Rechnungen mit mindestens einem offenen Finding
+    gehen ein (ein `JOIN`-Aggregat je Rechnung, kein N+1).
+  - Jede Zeile enthält `month`, `supplier`, `invoice_count` (Rechnungen mit
+    mindestens einem offenen Finding), `open_finding_count`, `open_amount`, die
+    Aufwandsfelder `open_review_minutes`/`open_review_cost_eur` nach denselben
+    ROI-Annahmen wie `/api/review-workload` und `/api/stats/roi`
+    (`open_review_minutes = open_finding_count × review_minutes_per_finding`,
+    `open_review_cost_eur = open_review_minutes / 60 × hourly_rate`, auf zwei
+    Nachkommastellen) sowie `top_invoice` — die Rechnung mit dem größten
+    `open_amount` im Bucket (Gleichstand: `open_finding_count` absteigend, dann
+    `id` aufsteigend) mit `id`, `invoice_number`, `entity`, `cost_center`,
+    `open_finding_count` und `open_amount`. `top_invoice` ist `null`, wenn ein
+    Bucket keine qualifizierende Rechnung enthält.
+  - Sortiert wird absteigend nach `open_amount`, dann aufsteigend nach
+    `supplier`, `month` (deterministisch). `totals` trägt dieselbe Feldstruktur
+    (`supplier == null`) und aggregiert exakt über alle gelieferten Zeilen
+    (`top_invoice` = die global größte Rechnung). `parameters` weist `months`,
+    `review_minutes_per_finding` und `review_hourly_rate_eur` aus.
+  - `?months=` (Default `6`, `>= 1`, ungültig → `400`) beschränkt auf die
+    jüngsten N in den Daten vorkommenden Monate (Anker: neuerster Monat),
+    `?entity=`/`?cost_center=` filtern wiederholbar und UND-verknüpft wie
+    `list_invoices`; unbekannte Filterwerte liefern `200` mit leeren Listen,
+    niemals `400`. Die Annahmen lassen sich über
+    `?review_minutes=`/`?hourly_rate=` überschreiben. Reine Lese-Erweiterung ohne
+    neue Tabellen, Spalten oder Laufzeit-Abhängigkeiten.
 - **Web-Oberfläche mit Seitenumschaltung und Sortierung**
   (`src/radar/static/index.html`): Die Listen für Findings, Rechnungen und
   Lieferanten-Regeln bedienen die oben beschriebenen Endpoint-Parameter direkt,
@@ -247,6 +296,12 @@ persistentem Speicher.
     `Offenes Volumen`, `Aufwand (min)`, `Aufwand (EUR)`, `Top-Rechnung`. Bei
     `400` erscheint eine sichtbare Fehlermeldung, ohne die zuletzt geladene
     Ansicht zu verwerfen.
+  - Die Sektion **„Prüf-Last je Lieferant (Zeitreihe)“** bindet
+    `GET /api/review-workload/by-supplier/timeseries` an: ein Monats-Selektor,
+    eine Gesellschafts- und eine Kostenstellen-Mehrfachauswahl und die Tabelle
+    `Monat`, `Lieferant`, `Rechnungen`, `Offene Findings`, `Offenes Volumen`,
+    `Aufwand (min)`, `Aufwand (EUR)`, `Top-Rechnung`; bei `400` erscheint eine
+    sichtbare Fehlermeldung, ohne die zuletzt geladene Ansicht zu verwerfen.
 - **Nachvollziehbarkeit:** Audit-Ansicht pro Rechnung — was verglichen wurde und
   was abwich (Referenzwert, Ist-Wert, Betrag, Begründung).
 - **Findings je Artikel/Position gruppiert** (`GET /api/invoices/:id`): Die
@@ -655,6 +710,18 @@ priorisiert die Freigabe-Entscheidung.
     optional als Zeitverlauf im Digest) ausweisen sowie die Reihenfolge im
     Digest direkt nach gebundenem offenem Prüfaufwand (`open_review_cost_eur`)
     statt nur nach Volumen priorisieren.
+11. **Operative Lieferanten-Sicht als Zeitreihe — umgesetzt.** Mit
+    `GET /api/review-workload/by-supplier/timeseries` beantwortet das Radar die
+    Einkaufs-Frage *„welcher Lieferant baut über die Monate Rückstand auf, und
+    wie viel Aufwand bindet er?“* je `(Monat, Lieferant)`, inklusive
+    `top_invoice`, `totals` und `parameters` sowie den Filtern
+    `?months=`/`?entity=`/`?cost_center=` (UND-verknüpft) und den
+    What-if-Annahmen `?review_minutes=`/`?hourly_rate=`. Die Weboberfläche zeigt
+    die Sektion „Prüf-Last je Lieferant (Zeitreihe)“. **Nächster sinnvoller
+    Schritt:** ein **Lieferanten-Digest**, der die steigende offene Prüflast je
+    Lieferant über die Monate zusammenfasst und aktiv an den Einkauf zustellt
+    (Webhook/SMTP), damit die operative Ansprache ohne manuellen Abruf
+    auskommt.
 
 ## Validation plan (Bezug zur Produkthypothese)
 
@@ -686,7 +753,13 @@ sichtbar, wo das Team als Nächstes ansetzen sollte. Ergänzend legt die
 je Monat, Gesellschaft und Kostenstelle offen und nennt je Bucket die Rechnung
 mit dem größten offenen Volumen; damit lässt sich im Quartalsreview
 nachvollziehen, welche Gesellschaft oder Kostenstelle über die Monate Rückstand
-aufbaut und welche konkrete Rechnung das Volumen treibt. Als zusätzliche Auswertungsgrundlage
+aufbaut und welche konkrete Rechnung das Volumen treibt. Die **Prüf-Last je
+Lieferant (Zeitreihe)** (`GET /api/review-workload/by-supplier/timeseries`)
+überträgt dieselbe Auswertung auf die Lieferantenachse und macht die offene Last
+je `(Monat, Lieferant)` sichtbar; im Concierge-Test zeigt sie dem Einkauf direkt,
+welcher Lieferant den Rückstand treibt und wie viel Prüfaufwand (Minuten und EUR)
+er bindet, sodass steigende Lieferanten-Rückstände früh angesprochen werden
+können. Als zusätzliche Auswertungsgrundlage
 dient das **Abweichungsvolumen je Artikel pro Rechnung** aus der
 Gruppenansicht (`items`/`items_total_amount` in `GET /api/invoices/:id`): Es
 zeigt im Concierge-Test, welche Artikel und Positionen — auch bei Rechnungen
