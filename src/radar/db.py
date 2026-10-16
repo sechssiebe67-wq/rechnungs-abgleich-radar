@@ -147,6 +147,21 @@ DEFAULT_REVIEW_WORKLOAD_LIMIT = 25
 # with ``?months=``.
 DEFAULT_REVIEW_WORKLOAD_TIMESERIES_MONTHS = 6
 
+# Fields of one per-society rollup row below the digest's ``by_entity_rollup``
+# key (in addition to the ``entity`` key). The ``totals`` row carries the exact
+# same fields with ``entity`` set to ``None`` so all rows share one shape.
+ROLLUP_FIELDS = (
+    "open_finding_count",
+    "open_amount",
+    "open_review_minutes",
+    "open_review_cost_eur",
+    "confirmed",
+    "false_alarm",
+    "precision",
+    "avoided_review_cost_eur",
+    "avoided_mispayment_eur",
+)
+
 # Display label for findings that are not tied to a single invoice position
 # (e.g. ``missing_po`` or ``duplicate``); they still count towards the report.
 NO_POSITION_LABEL = "(ohne Position)"
@@ -1356,6 +1371,160 @@ class Store:
             grouped["cost_center"], "cost_center"
         )
         return result
+
+    def entity_rollup(
+        self,
+        settings: Optional[Settings] = None,
+        entities: Optional[List[str]] = None,
+        cost_centers: Optional[List[str]] = None,
+        review_minutes: Optional[float] = None,
+        hourly_rate: Optional[float] = None,
+    ) -> dict:
+        """Consolidated per-society workload and ROI for the weekly digest.
+
+        For every society present in the (filtered) invoices this emits one row
+        that combines the currently bound review load — ``open_finding_count``,
+        ``open_amount``, ``open_review_minutes`` and ``open_review_cost_eur`` —
+        with the benefit realized from feedback — ``confirmed``,
+        ``false_alarm``, ``precision``, ``avoided_review_cost_eur`` and
+        ``avoided_mispayment_eur`` (the summed amount of confirmed findings).
+
+        ``open_amount`` matches ``GET /api/stats?entity=`` and the effort fields
+        follow exactly the ROI assumptions
+        (``open_review_minutes = open_finding_count × review_minutes``,
+        ``open_review_cost_eur = open_review_minutes / 60 × rate``, rounded to
+        two decimals). ``avoided_mispayment_eur`` is the confirmed amount from
+        :meth:`roi_report`.
+
+        A society without open findings still appears with zeros. Rows are
+        sorted by ``open_amount`` descending, then ``entity`` ascending. The
+        returned ``totals`` row carries the exact same fields (``entity`` is
+        ``None``) and sums the per-society rows; ``precision`` is recomputed
+        from the aggregated counts rather than averaged.
+
+        ``entities``/``cost_centers`` restrict the view exactly like
+        :meth:`list_invoices` (AND-combined); unknown values are not an error
+        and yield empty rows with a zeroed totals row. ``review_minutes`` and
+        ``hourly_rate`` override the settings for what-if analyses. Only the
+        existing ``invoices``/``findings`` aggregates are reused — no new
+        tables, columns or runtime dependencies.
+        """
+        base = settings or Settings()
+        minutes = (
+            base.review_minutes_per_finding
+            if review_minutes is None
+            else float(review_minutes)
+        )
+        rate = (
+            base.review_hourly_rate_eur
+            if hourly_rate is None
+            else float(hourly_rate)
+        )
+        if minutes < 0:
+            raise ValueError("review_minutes must be >= 0")
+        if rate < 0:
+            raise ValueError("hourly_rate must be >= 0")
+
+        clauses: List[str] = []
+        params: List[object] = []
+        if entities:
+            placeholders = ", ".join("?" for _ in entities)
+            clauses.append("i.entity IN (%s)" % placeholders)
+            params.extend(entities)
+        if cost_centers:
+            placeholders = ", ".join("?" for _ in cost_centers)
+            clauses.append("i.cost_center IN (%s)" % placeholders)
+            params.extend(cost_centers)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+
+        with self.connect() as conn:
+            rows = conn.execute(
+                """SELECT COALESCE(i.entity, 'default') AS entity,
+                          COALESCE(SUM(CASE WHEN f.status = 'open'
+                                            THEN 1 ELSE 0 END), 0)
+                              AS open_finding_count,
+                          COALESCE(SUM(CASE WHEN f.status = 'open'
+                                            THEN f.amount ELSE 0 END), 0)
+                              AS open_amount,
+                          COALESCE(SUM(CASE WHEN f.feedback = 'confirmed'
+                                            THEN 1 ELSE 0 END), 0) AS confirmed,
+                          COALESCE(SUM(CASE WHEN f.feedback = 'false_alarm'
+                                            THEN 1 ELSE 0 END), 0) AS false_alarm,
+                          COALESCE(SUM(CASE WHEN f.feedback = 'confirmed'
+                                            THEN f.amount ELSE 0 END), 0)
+                              AS confirmed_amount
+                   FROM invoices i
+                   LEFT JOIN findings f ON f.invoice_id = i.id
+                   %s
+                   GROUP BY COALESCE(i.entity, 'default')"""
+                % where,
+                params,
+            ).fetchall()
+
+        rows_out: List[dict] = []
+        for row in rows:
+            confirmed = int(row["confirmed"])
+            false_alarm = int(row["false_alarm"])
+            reviewed = confirmed + false_alarm
+            precision = (confirmed / reviewed) if reviewed else None
+            open_count = int(row["open_finding_count"])
+            open_minutes = round(open_count * minutes, 2)
+            avoided_minutes = round(confirmed * minutes, 2)
+            rows_out.append(
+                {
+                    "entity": row["entity"] or "default",
+                    "open_finding_count": open_count,
+                    "open_amount": round(float(row["open_amount"]), 2),
+                    "open_review_minutes": open_minutes,
+                    "open_review_cost_eur": round(open_minutes / 60 * rate, 2),
+                    "confirmed": confirmed,
+                    "false_alarm": false_alarm,
+                    "precision": round(precision, 4)
+                    if precision is not None
+                    else None,
+                    "avoided_review_cost_eur": round(
+                        avoided_minutes / 60 * rate, 2
+                    ),
+                    "avoided_mispayment_eur": round(
+                        float(row["confirmed_amount"]), 2
+                    ),
+                }
+            )
+        rows_out.sort(key=lambda entry: (-entry["open_amount"], entry["entity"]))
+
+        total_confirmed = sum(entry["confirmed"] for entry in rows_out)
+        total_false_alarm = sum(entry["false_alarm"] for entry in rows_out)
+        reviewed_total = total_confirmed + total_false_alarm
+        total_precision = (
+            (total_confirmed / reviewed_total) if reviewed_total else None
+        )
+        totals = {
+            "entity": None,
+            "open_finding_count": sum(
+                entry["open_finding_count"] for entry in rows_out
+            ),
+            "open_amount": round(
+                sum(entry["open_amount"] for entry in rows_out), 2
+            ),
+            "open_review_minutes": round(
+                sum(entry["open_review_minutes"] for entry in rows_out), 2
+            ),
+            "open_review_cost_eur": round(
+                sum(entry["open_review_cost_eur"] for entry in rows_out), 2
+            ),
+            "confirmed": total_confirmed,
+            "false_alarm": total_false_alarm,
+            "precision": round(total_precision, 4)
+            if total_precision is not None
+            else None,
+            "avoided_review_cost_eur": round(
+                sum(entry["avoided_review_cost_eur"] for entry in rows_out), 2
+            ),
+            "avoided_mispayment_eur": round(
+                sum(entry["avoided_mispayment_eur"] for entry in rows_out), 2
+            ),
+        }
+        return {"entities": rows_out, "totals": totals}
 
     def stats_by_supplier(
         self,

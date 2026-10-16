@@ -17,6 +17,15 @@ Preistest weist den vermiedenen Aufwand und die vermiedenen Fehlzahlungen **je
 Gesellschaft und über den Konzern aggregiert** aus. Ein gemeinsamer Wochen-Digest
 fasst die gewählten Gesellschaften zusammen.
 
+Der Wochen-Digest wird dabei selbst zur **konsolidierten Management-Sicht** für
+Gruppen- und Holding-Kreditorenbuchhaltungen: Statt nur einen globalen Betrag zu
+melden, zeigt eine einzige Montags-Nachricht **je Gesellschaft** sowohl die
+**offene Prüflast** (was noch geprüft werden muss) als auch den **realisierten
+ROI** (was das Radar bereits gespart hat) plus eine **Konzern-Summenzeile** — so
+beantwortet der Digest die Frage „Wo steht der Konzern, und welche Gesellschaft
+braucht als Nächstes Aufmerksamkeit?“, ohne dass die Weboberfläche geöffnet
+werden muss.
+
 Der **ROI-Nachweis** (`GET /api/stats/roi`) macht diesen Nutzen für den Preistest
 in Euro greifbar: Er rechnet bestätigte Treffer in vermiedenen Prüfaufwand und
 vermiedene Fehlzahlungen um — je Lieferant, **je Gesellschaft** und zusätzlich
@@ -434,6 +443,37 @@ persistentem Speicher.
     `200` mit leerer `findings`-Liste, `total_amount == 0.0`, leeren
     Aufschlüsselungsblöcken und dem angeforderten Wert in `cost_centers`
     widergespiegelt.
+- **Konsolidierter Gruppen-Rollup im Digest** (`by_entity_rollup`): Der
+  Wochen-Digest ist die konsolidierte Management-Sicht für Gruppen- und
+  Holding-Kreditorenbuchhaltungen. Zusätzlich zur count-only-Aufschlüsselung
+  `by_entity` liefert er je Gesellschaft sowohl die **offene Prüflast** als auch
+  den **realisierten ROI** in einem Block und eine `totals`-Zeile über alle
+  berichteten Gesellschaften:
+  - Je Gesellschaft: `open_finding_count`, `open_amount`,
+    `open_review_minutes`, `open_review_cost_eur` (offene Arbeit, exakt nach den
+    ROI-Annahmen aus `/api/review-workload`: `open_review_minutes =
+    open_finding_count × review_minutes_per_finding`,
+    `open_review_cost_eur = open_review_minutes / 60 × hourly_rate`, auf zwei
+    Nachkommastellen) sowie `confirmed`, `false_alarm`, `precision`,
+    `avoided_review_cost_eur` und `avoided_mispayment_eur` (realisierter Nutzen
+    aus dem Feedback, exakt die Mathematik aus `/api/stats/roi`;
+    `avoided_mispayment_eur` ist die Summe der Beträge bestätigter Findings).
+  - `by_entity_rollup` ist der Block `{"entities": [...], "totals": {...}}`.
+    Gesellschaften ohne offene Findings erscheinen mit Nullen; sortiert wird
+    absteigend nach `open_amount`, bei Gleichstand aufsteigend nach `entity`.
+    `totals` trägt dieselben Felder (`entity: null`), summiert exakt die
+    Gesellschaftszeilen und berechnet `precision` neu aus den aggregierten
+    Zählern (nie gemittelt).
+  - Der Rollup berücksichtigt dieselben `?entity=`/`?cost_center=`-Filter wie
+    der Digest (UND-verknüpft); ohne Filter werden alle in den Rechnungen
+    vorkommenden Gesellschaften berichtet. Die Annahmen lassen sich wie bei den
+    ROI-Endpunkten über `?review_minutes=`/`?hourly_rate=` überschreiben. Ein
+    unbekannter Filterwert liefert `200` mit leerem Rollup und genullter
+    `totals`-Zeile.
+  - Über `?rollup=false` lässt sich der Block weglassen; der Abruf ist dann
+    byte-identisch zum bisherigen Digest. JSON, HTML-Tabelle, Webhook-Payload
+    und Weboberfläche zeigen den Rollup standardmäßig. Reine Lese-Erweiterung:
+    keine neuen Tabellen, Spalten oder Laufzeit-Abhängigkeiten.
 - **Digest-Versand per Webhook und SMTP** (`radar/notify.py`)
   - Aktive Zustellung des Wochen-Digests statt manuellem Abruf.
   - **Webhook** (Slack-/Mattermost-kompatibles JSON mit Gesamtbetrag, Anzahl
@@ -599,6 +639,22 @@ priorisiert die Freigabe-Entscheidung.
    **Nächster Schritt:** eine optionale Spaltenauswahl über
    `?columns=spalte1,spalte2` (Whitelist je Endpoint, Default = alle Spalten),
    damit Nutzer nur die für sie relevanten Spalten exportieren.
+10. **Konsolidierter Gruppen-Rollup im Wochen-Digest — umgesetzt.** Der Digest
+    trägt jetzt mit `by_entity_rollup` eine Management-Sicht je Gesellschaft:
+    offene Findings, offenes Volumen, offener Prüfaufwand (Minuten und EUR),
+    bestätigte/Fehlalarm-Zähler, Precision, vermiedener Prüfaufwand und
+    vermiedene Fehlzahlung sowie eine `totals`-Zeile über den Konzern. Die
+    Werte folgen exakt den bestehenden Endpunkten `/api/stats`,
+    `/api/review-workload` und `/api/stats/roi` und sind über
+    `?review_minutes=`/`?hourly_rate=` als What-if überschreibbar. Der Block
+    erscheint in JSON, HTML, Webhook-Payload und Weboberfläche und lässt sich
+    über `?rollup=false` abschalten (dann byte-identisch zu vorher). Damit
+    beantwortet die Montags-Nachricht ohne Web-UI, wo der Konzern steht und
+    welche Gesellschaft als Nächstes Aufmerksamkeit braucht. **Nächster
+    Schritt:** dieselbe konsolidierte Sicht zusätzlich je Kostenstelle (und
+    optional als Zeitverlauf im Digest) ausweisen sowie die Reihenfolge im
+    Digest direkt nach gebundenem offenem Prüfaufwand (`open_review_cost_eur`)
+    statt nur nach Volumen priorisieren.
 
 ## Validation plan (Bezug zur Produkthypothese)
 
@@ -651,7 +707,14 @@ Buchhaltung (`entities`) und zusätzlich auf einzelne Kostenstellen
 (`by_entity`, `by_cost_center`, `by_supplier`) macht die wöchentliche Nachricht
 selbst selbsterklärend: Die Controller sehen ohne Öffnen der Weboberfläche,
 welche Gesellschaft, Kostenstelle oder welcher Lieferant das offene Volumen der
-Woche treibt. So misst der
+Woche treibt. Der **konsolidierte Gruppen-Rollup** (`by_entity_rollup`) macht die
+wöchentliche Nachricht zugleich zur Management-Sicht: Je Gesellschaft stehen
+offene Prüflast (offene Findings, offenes Volumen, offener Aufwand in Minuten und
+EUR) und realisierter ROI (bestätigt/Fehlalarm, Precision, vermiedener Aufwand,
+vermiedene Fehlzahlung) nebeneinander, abgeschlossen durch eine `totals`-Zeile
+über den Konzern. So beantwortet die Montags-Mail ohne Web-UI, wo der Konzern
+steht und welche Gesellschaft als Nächstes Aufmerksamkeit braucht; über
+`?rollup=false` bleibt der bisherige Digest unverändert abrufbar. So misst der
 Test die tatsächliche Nutzung und die Precision weiterhin über das Feedback in
 der Oberfläche.
 

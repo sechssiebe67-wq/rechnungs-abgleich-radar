@@ -16,7 +16,7 @@ from typing import Callable, Dict, List, Optional
 
 from .config import Settings
 from .db import Store
-from .digest import render_html, weekly_digest
+from .digest import empty_rollup, render_html, weekly_digest
 
 WEBHOOK_SUBJECT = "Rechnungs-Abgleich-Radar — Wochen-Digest"
 WEBHOOK_TIMEOUT_SECONDS = 10
@@ -58,6 +58,7 @@ def _webhook_payload(digest: dict) -> dict:
         "by_entity": list(digest.get("by_entity") or []),
         "by_cost_center": list(digest.get("by_cost_center") or []),
         "by_supplier": list(digest.get("by_supplier") or []),
+        "by_entity_rollup": digest.get("by_entity_rollup") or empty_rollup(),
         "top_findings": top,
     }
 
@@ -140,16 +141,27 @@ def deliver_digest(
     settings: Settings,
     entities: Optional[List[str]] = None,
     cost_centers: Optional[List[str]] = None,
+    review_minutes: Optional[float] = None,
+    hourly_rate: Optional[float] = None,
 ) -> dict:
     """Deliver the current weekly digest over every configured channel.
 
     ``entities`` optionally restricts the digest (and the webhook payload) to
     the selected societies; ``cost_centers`` restricts it to the selected cost
-    centers (AND-combined with ``entities``). Always returns both channel
-    entries. Unconfigured channels are reported as ``skipped``; a failure in
-    one channel is isolated from the other.
+    centers (AND-combined with ``entities``). ``review_minutes``/``hourly_rate``
+    override the ROI assumptions for the consolidated ``by_entity_rollup`` (same
+    what-if switches as the ROI endpoints). Always returns both channel entries.
+    Unconfigured channels are reported as ``skipped``; a failure in one channel
+    is isolated from the other.
     """
-    digest = weekly_digest(store, entities=entities, cost_centers=cost_centers)
+    digest = weekly_digest(
+        store,
+        entities=entities,
+        cost_centers=cost_centers,
+        settings=settings,
+        review_minutes=review_minutes,
+        hourly_rate=hourly_rate,
+    )
 
     webhook_configured = bool(settings.digest_webhook_url)
     email_configured = bool(settings.digest_smtp_host and settings.digest_smtp_to)

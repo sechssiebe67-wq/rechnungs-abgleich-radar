@@ -187,6 +187,13 @@
       <span class="muted" id="digest-send-status"></span>
     </div>
     <p class="muted" id="digest-entities">Lade …</p>
+    <span class="error" id="digest-error"></span>
+    <h3 style="margin:1.25rem 0 .25rem; font-size:.9rem;">Konsolidierter Rollup <span class="muted">(offene Last und ROI je Gesellschaft)</span></h3>
+    <p class="muted" id="digest-rollup-hint">Lade …</p>
+    <table id="digest-rollup-table" style="margin-top:.5rem">
+      <thead><tr><th>Gesellschaft</th><th class="amount">Offene Findings</th><th class="amount">Offenes Volumen</th><th class="amount">Offener Aufwand (EUR)</th><th class="amount">Bestätigt</th><th class="amount">Fehlalarm</th><th class="amount">Precision</th><th class="amount">Vermiedener Aufwand (EUR)</th><th class="amount">Vermiedene Fehlzahlung (EUR)</th></tr></thead>
+      <tbody id="digest-rollup"></tbody>
+    </table>
   </section>
 
   <section>
@@ -524,9 +531,47 @@ function digestQuery() {
   selectedDigestCostCenters().forEach(c => parts.push('cost_center=' + encodeURIComponent(c)));
   return parts.length ? '?' + parts.join('&') : '';
 }
+function renderDigestRollup(rollup) {
+  const tbody = document.getElementById('digest-rollup');
+  const table = document.getElementById('digest-rollup-table');
+  const hint = document.getElementById('digest-rollup-hint');
+  if (!tbody || !table || !hint) return;
+  const rows = (rollup && rollup.entities) || [];
+  const totals = rollup && rollup.totals;
+  if (!rows.length) {
+    hint.textContent = 'Keine Gesellschaften für die gewählten Filter.';
+    table.style.display = 'none';
+    tbody.innerHTML = '';
+    return;
+  }
+  hint.textContent = '';
+  table.style.display = '';
+  const cells = r => `<tr>
+    <td>${esc(r.entity || '—')}</td>
+    <td class="amount">${esc(r.open_finding_count)}</td>
+    <td class="amount">${money(r.open_amount)}</td>
+    <td class="amount">${money(r.open_review_cost_eur)}</td>
+    <td class="amount">${esc(r.confirmed)}</td>
+    <td class="amount">${esc(r.false_alarm)}</td>
+    <td class="amount">${pct(r.precision)}</td>
+    <td class="amount">${money(r.avoided_review_cost_eur)}</td>
+    <td class="amount">${money(r.avoided_mispayment_eur)}</td>
+  </tr>`;
+  const body = rows.map(cells);
+  if (totals) body.push(cells(Object.assign({}, totals, {entity: 'Gesamt'})));
+  tbody.innerHTML = body.join('');
+}
 async function loadDigest() {
+  const errorEl = document.getElementById('digest-error');
   const query = digestQuery();
-  const d = await api('/api/digest/weekly' + query);
+  let d;
+  try {
+    d = await api('/api/digest/weekly' + query);
+  } catch (e) {
+    if (errorEl) errorEl.textContent = 'Fehler: ' + e.message;
+    return;
+  }
+  if (errorEl) errorEl.textContent = '';
   const entities = d.entities || [];
   const costCenters = d.cost_centers || [];
   const parts = [
@@ -535,6 +580,7 @@ async function loadDigest() {
     `${money(d.total_amount || 0)} aus ${d.finding_count || 0} Auffälligkeiten`,
   ];
   document.getElementById('digest-entities').textContent = parts.join(' — ') + '.';
+  renderDigestRollup(d.by_entity_rollup);
   const htmlLink = document.getElementById('digest-html-link');
   const jsonLink = document.getElementById('digest-json-link');
   if (htmlLink) htmlLink.href = '/api/digest/weekly.html' + query;
