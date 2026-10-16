@@ -614,6 +614,31 @@ class RadarHandler(BaseHTTPRequestHandler):
             }
         )
 
+    def h_review_workload_by_supplier_timeseries(self, params, query) -> None:
+        months = _non_negative_query_int(query, "months")
+        if months is not None and months < 1:
+            raise ValueError("months must be >= 1")
+        review_minutes = _non_negative_query_float(query, "review_minutes")
+        hourly_rate = _non_negative_query_float(query, "hourly_rate")
+        entities = _query_list(query, "entity") or None
+        cost_centers = _query_list(query, "cost_center") or None
+        result = self.store.review_workload_by_supplier_timeseries(
+            self.settings,
+            months,
+            entities,
+            cost_centers,
+            review_minutes,
+            hourly_rate,
+        )
+        self._send_json(
+            {
+                "rows": result["rows"],
+                "count": len(result["rows"]),
+                "totals": result["totals"],
+                "parameters": result["parameters"],
+            }
+        )
+
     def h_invoices_export(self, params, query) -> None:
         entities = _query_list(query, "entity") or None
         cost_centers = _query_list(query, "cost_center") or None
@@ -836,6 +861,11 @@ def build_router() -> Router:
         "GET",
         "/api/review-workload/timeseries",
         RadarHandler.h_review_workload_timeseries,
+    )
+    router.add(
+        "GET",
+        "/api/review-workload/by-supplier/timeseries",
+        RadarHandler.h_review_workload_by_supplier_timeseries,
     )
     router.add("POST", "/api/invoices", RadarHandler.h_add_invoice)
     router.add("POST", "/api/invoices/import", RadarHandler.h_import_invoices)
