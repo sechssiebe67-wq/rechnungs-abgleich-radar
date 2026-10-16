@@ -80,7 +80,12 @@ Prüflast direkt je Lieferant ansprechen, ohne die Liste manuell zu filtern.
 Zusätzlich liefert der **Wochen-Digest** diese Sicht als Block
 `by_supplier_rollup` direkt mit: offene Prüflast und realisierter ROI je
 Lieferant plus `totals`-Summenzeile — so beantwortet bereits die Montags-Nachricht
-die Einkaufs-Frage nach der höchsten offenen Prüflast je Lieferant.
+die Einkaufs-Frage nach der höchsten offenen Prüflast je Lieferant. Derselbe
+Digest trägt mit `by_supplier_backlog_trend` außerdem die **zeitliche
+Entwicklung** je Lieferant (neuester Monat gegen Vormonat, `delta_open_amount`,
+gebundener Prüfaufwand und die Rechnung, die den Rückstand konzentriert) — damit
+sieht der Einkauf ohne Web-UI, welcher Lieferant über die letzten Monate
+Rückstand aufbaut, nicht nur wer ihn aktuell hält.
 Bei der Abarbeitung des Wochen-Digests und der
 Findings-Liste arbeiten sie zuerst die Rechnungen mit dem **größten offenen
 Prüfvolumen** ab (viele offene Findings bzw. hoher offener Betrag), weil dort pro
@@ -556,10 +561,56 @@ persistentem Speicher.
     `by_entity_rollup` und aggregiert über dieselbe Rechnungsmenge.
   - Über denselben Schalter `?rollup=false` werden `by_entity_rollup` und
     `by_supplier_rollup` **gemeinsam** weggelassen; ohne Angabe liefert der
-    Digest beide. JSON und die HTML-Tabelle „Lieferanten-Rollup“ inkl.
-    Summenzeile zeigen den Block standardmäßig. Rein additive,
-    rückwärtskompatible Erweiterung: keine neuen Tabellen, Spalten, Endpunkte
-    oder Laufzeit-Abhängigkeiten.
+   Digest beide. JSON und die HTML-Tabelle „Lieferanten-Rollup“ inkl.
+   Summenzeile zeigen den Block standardmäßig. Rein additive,
+   rückwärtskompatible Erweiterung: keine neuen Tabellen, Spalten, Endpunkte
+   oder Laufzeit-Abhängigkeiten.
+- **Lieferanten-Backlog-Trend im Wochen-Digest** (`by_supplier_backlog_trend`):
+  Der Digest beantwortet dieselbe Einkaufs-Frage wie
+  `GET /api/review-workload/by-supplier/timeseries`, aber **direkt in der
+  Montags-Nachricht** und ohne Web-UI — *welcher Lieferant baut die offene
+  Prüflast über die Monate auf, wie viel Aufwand bindet das, und welche
+  Rechnung konzentriert den Rückstand?* Der Block ist eine kompakte,
+  begrenzte Ableitung der bestehenden Zeitreihen-Logik (`Store.
+  supplier_backlog_trend` ruft dieselbe Aggregation auf; keine neuen Tabellen,
+  Indizes oder Laufzeit-Abhängigkeiten).
+  - Der Block ist `{"suppliers": [...], "totals": {...}}`. Je Lieferant eine
+    Zeile mit `supplier`, `latest_month`, `latest_open_amount`,
+    `previous_month`, `previous_open_amount`, `delta_open_amount`,
+    `delta_open_finding_count`, `open_review_minutes`, `open_review_cost_eur`
+    und `top_invoice`.
+  - Gruppiert wird wie in der Zeitreihe je `(supplier, month)` mit
+    `month = strftime('%Y-%m', invoices.created_at)`; nur Rechnungen mit
+    mindestens einem offenen Finding zählen. Je Lieferant werden die **zwei
+    jüngsten vorkommenden Monate** verglichen: `delta_open_amount` und
+    `delta_open_finding_count` sind `latest − previous`. Erscheint ein
+    Lieferant nur in einem Monat, ist `previous_month == null`,
+    `previous_open_amount == 0.0` und das Delta entspricht dem neuesten Wert.
+  - `open_review_minutes`/`open_review_cost_eur` sind die gebundene Prüflast
+    des **neuesten Monats** nach denselben ROI-Annahmen wie
+    `/api/review-workload` (`open_review_minutes = open_finding_count ×
+    review_minutes_per_finding`, `open_review_cost_eur = open_review_minutes /
+    60 × hourly_rate`, auf zwei Nachkommastellen). `top_invoice` ist die
+    Rechnung mit dem größten offenen Volumen im neuesten Monat des Lieferanten
+    (Gleichstand: `open_finding_count` absteigend, dann `id` aufsteigend) mit
+    `id`, `invoice_number`, `entity`, `cost_center`, `open_finding_count` und
+    `open_amount`; `null`, wenn keine qualifiziert.
+  - Sortierung deterministisch: absteigend nach `delta_open_amount`,
+    bei Gleichstand aufsteigend nach `supplier`. `totals` trägt dieselbe
+    Feldstruktur (`supplier == null`, `latest_month`/`previous_month == null`)
+    und aggregiert exakt über alle gelieferten Zeilen; `top_invoice` ist die
+    global größte Rechnung.
+  - `?trend_months=` (Default `2`, muss `>= 2` sein, ungültig → `400` mit
+    JSON-Fehlerkörper) weitet das betrachtete Kalenderfenster (Anker: neuester
+    Monat); je Lieferant werden daraus die zwei jüngsten vorkommenden Monate
+    verglichen. Die `?entity=`/`?cost_center=`-Filter (UND-verknüpft, unbekannte
+    Werte → `200` mit leerer `suppliers`-Liste und genullter `totals`-Zeile)
+    wirken konsistent zur Zeitreihe. Ein leerer Block rendert in HTML keine
+    Tabelle; `?rollup=false` lässt `by_supplier_backlog_trend` **gemeinsam** mit
+    `by_entity_rollup` und `by_supplier_rollup` weg.
+  - JSON, HTML-Tabelle (Lieferant, neuester Monat, Δ offenes Volumen, offener
+    Aufwand EUR, Top-Rechnung), Webhook-Payload und Weboberfläche zeigen den
+    Block standardmäßig. Rein additive, rückwärtskompatible Erweiterung.
 - **Digest-Versand per Webhook und SMTP** (`radar/notify.py`)
   - Aktive Zustellung des Wochen-Digests statt manuellem Abruf.
   - **Webhook** (Slack-/Mattermost-kompatibles JSON mit Gesamtbetrag, Anzahl
@@ -751,10 +802,16 @@ priorisiert die Freigabe-Entscheidung.
     die Sektion „Prüf-Last je Lieferant (Zeitreihe)“. **Umgesetzt (Teil):** Der
     **Wochen-Digest** trägt mit `by_supplier_rollup` die offene Last **und** den
     realisierten ROI je Lieferant plus `totals`-Summenzeile und beantwortet damit
-    die Einkaufs-Frage ohne separaten Abruf. **Nächster sinnvoller Schritt:** ein
-    eigenständiger **Lieferanten-Digest**, der die steigende offene Prüflast je
-    Lieferant über die Monate zusammenfasst und aktiv an den Einkauf zustellt
-    (Webhook/SMTP), damit die operative Ansprache ohne manuellen Abruf auskommt.
+    die Einkaufs-Frage ohne separaten Abruf. **Umgesetzt:** zusätzlich liefert
+    derselbe Digest mit `by_supplier_backlog_trend` die **zeitliche Entwicklung**
+    (neuester Monat vs. Vormonat) je Lieferant inkl. `delta_open_amount`,
+    `delta_open_finding_count`, gebundenem Prüfaufwand und der Rechnung, die den
+    Rückstand konzentriert — über `?trend_months=` (Default `2`) steuerbar und
+    wie die übrigen Rollups über `?rollup=false` abschaltbar. **Nächster
+    sinnvoller Schritt:** ein eigenständiger **Lieferanten-Digest**, der die
+    steigende offene Prüflast je Lieferant über die Monate zusammenfasst und
+    aktiv an den Einkauf zustellt (Webhook/SMTP), damit die operative Ansprache
+    ohne manuellen Abruf auskommt.
 
 ## Validation plan (Bezug zur Produkthypothese)
 

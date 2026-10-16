@@ -147,6 +147,11 @@ DEFAULT_REVIEW_WORKLOAD_LIMIT = 25
 # with ``?months=``.
 DEFAULT_REVIEW_WORKLOAD_TIMESERIES_MONTHS = 6
 
+# Default number of calendar months the digest's supplier backlog trend looks
+# back. Two months are the minimum needed to compare the newest month of a
+# supplier against the previous one, matching ``?trend_months=`` (default 2).
+DEFAULT_SUPPLIER_BACKLOG_TREND_MONTHS = 2
+
 # Fields of one per-society rollup row below the digest's ``by_entity_rollup``
 # key (in addition to the ``entity`` key). The ``totals`` row carries the exact
 # same fields with ``entity`` set to ``None`` so all rows share one shape.
@@ -1179,6 +1184,140 @@ class Store:
                 "review_hourly_rate_eur": rate,
             },
         }
+
+    def supplier_backlog_trend(
+        self,
+        settings: Optional[Settings] = None,
+        entities: Optional[List[str]] = None,
+        cost_centers: Optional[List[str]] = None,
+        review_minutes: Optional[float] = None,
+        hourly_rate: Optional[float] = None,
+        months: Optional[int] = None,
+    ) -> dict:
+        """Compact per-supplier backlog trend for the weekly digest.
+
+        Reuses :meth:`review_workload_by_supplier_timeseries` (same ``(month,
+        supplier)`` aggregation, same ROI assumptions, same filters) and folds
+        its rows down to **one row per supplier** that compares the supplier's
+        two most recent months: it answers *which supplier is accumulating open
+        review load month over month, and which single invoice concentrates that
+        backlog?*
+
+        Each row carries ``supplier``, ``latest_month``, ``latest_open_amount``,
+        ``previous_month``, ``previous_open_amount``, ``delta_open_amount``
+        (``latest - previous``), ``delta_open_finding_count``, the bound effort
+        of the latest month ``open_review_minutes`` / ``open_review_cost_eur``
+        and ``top_invoice`` — the largest invoice of the latest month (ties:
+        ``open_finding_count`` descending, then ``id`` ascending) with ``id``,
+        ``invoice_number``, ``entity``, ``cost_center``, ``open_finding_count``
+        and ``open_amount``. A supplier present in only one month keeps
+        ``previous_month = None``, ``previous_open_amount = 0.0`` and a delta
+        equal to its latest value. ``top_invoice`` is ``None`` when nothing
+        qualifies.
+
+        Rows are sorted by ``delta_open_amount`` descending, then ``supplier``
+        ascending (deterministic). The ``totals`` row mirrors the field shape
+        (``supplier``/``latest_month``/``previous_month`` are ``None``) and sums
+        every numeric field over the delivered rows; its ``top_invoice`` is the
+        global largest. The ``months`` window (default
+        :data:`DEFAULT_SUPPLIER_BACKLOG_TREND_MONTHS`, must be ``>= 2``)
+        forwards to the time series, so it controls how far back the trend looks.
+        Only existing aggregates are reused — no new tables, columns or runtime
+        dependencies.
+        """
+        window = (
+            DEFAULT_SUPPLIER_BACKLOG_TREND_MONTHS
+            if months is None
+            else int(months)
+        )
+        if window < 2:
+            raise ValueError("months must be >= 2")
+
+        series = self.review_workload_by_supplier_timeseries(
+            settings,
+            months=window,
+            entities=entities,
+            cost_centers=cost_centers,
+            review_minutes=review_minutes,
+            hourly_rate=hourly_rate,
+        )
+
+        by_supplier: dict = {}
+        for row in series["rows"]:
+            by_supplier.setdefault(row["supplier"], []).append(row)
+
+        suppliers: List[dict] = []
+        for supplier, rows in by_supplier.items():
+            rows.sort(key=lambda entry: entry["month"])
+            latest = rows[-1]
+            previous = rows[-2] if len(rows) >= 2 else None
+            latest_amount = round(float(latest["open_amount"]), 2)
+            previous_amount = (
+                round(float(previous["open_amount"]), 2)
+                if previous is not None
+                else 0.0
+            )
+            previous_count = (
+                int(previous["open_finding_count"]) if previous is not None else 0
+            )
+            suppliers.append(
+                {
+                    "supplier": supplier,
+                    "latest_month": latest["month"],
+                    "latest_open_amount": latest_amount,
+                    "previous_month": (
+                        previous["month"] if previous is not None else None
+                    ),
+                    "previous_open_amount": previous_amount,
+                    "delta_open_amount": round(
+                        latest_amount - previous_amount, 2
+                    ),
+                    "delta_open_finding_count": (
+                        int(latest["open_finding_count"]) - previous_count
+                    ),
+                    "open_review_minutes": round(
+                        float(latest["open_review_minutes"]), 2
+                    ),
+                    "open_review_cost_eur": round(
+                        float(latest["open_review_cost_eur"]), 2
+                    ),
+                    "top_invoice": latest["top_invoice"],
+                }
+            )
+
+        suppliers.sort(
+            key=lambda entry: (-entry["delta_open_amount"], entry["supplier"] or "")
+        )
+
+        total_minutes = round(
+            sum(entry["open_review_minutes"] for entry in suppliers), 2
+        )
+        top_candidates = [
+            entry["top_invoice"] for entry in suppliers if entry["top_invoice"]
+        ]
+        totals = {
+            "supplier": None,
+            "latest_month": None,
+            "latest_open_amount": round(
+                sum(entry["latest_open_amount"] for entry in suppliers), 2
+            ),
+            "previous_month": None,
+            "previous_open_amount": round(
+                sum(entry["previous_open_amount"] for entry in suppliers), 2
+            ),
+            "delta_open_amount": round(
+                sum(entry["delta_open_amount"] for entry in suppliers), 2
+            ),
+            "delta_open_finding_count": sum(
+                entry["delta_open_finding_count"] for entry in suppliers
+            ),
+            "open_review_minutes": total_minutes,
+            "open_review_cost_eur": round(
+                sum(entry["open_review_cost_eur"] for entry in suppliers), 2
+            ),
+            "top_invoice": _pick_top_invoice(top_candidates),
+        }
+        return {"suppliers": suppliers, "totals": totals}
 
     def list_entities(self) -> List[str]:
         """Return the distinct, sorted entities occurring in invoices."""

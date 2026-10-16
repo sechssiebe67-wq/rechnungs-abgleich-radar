@@ -186,6 +186,20 @@ def _non_negative_query_int(
     return value
 
 
+def _trend_months(query: Dict[str, List[str]]) -> Optional[int]:
+    """Read and validate the optional ``?trend_months=`` digest parameter.
+
+    Returns ``None`` when absent/empty (the store then applies its default of
+    ``2``). Raises :class:`ValueError` (mapped to ``400`` by the dispatcher) for
+    non-integer, negative or too-small windows; a trend needs at least two
+    months to compare.
+    """
+    months = _non_negative_query_int(query, "trend_months")
+    if months is not None and months < 2:
+        raise ValueError("trend_months must be >= 2")
+    return months
+
+
 def _whitelisted_sort(
     query: Dict[str, List[str]], name: str, allowed: Dict[str, str]
 ) -> Optional[str]:
@@ -773,6 +787,7 @@ class RadarHandler(BaseHTTPRequestHandler):
         review_minutes = _non_negative_query_float(query, "review_minutes")
         hourly_rate = _non_negative_query_float(query, "hourly_rate")
         rollup = _query_flag(query, "rollup", True)
+        trend_months = _trend_months(query)
         self._send_json(
             weekly_digest(
                 self.store,
@@ -782,6 +797,7 @@ class RadarHandler(BaseHTTPRequestHandler):
                 review_minutes=review_minutes,
                 hourly_rate=hourly_rate,
                 rollup=rollup,
+                trend_months=trend_months,
             )
         )
 
@@ -791,6 +807,7 @@ class RadarHandler(BaseHTTPRequestHandler):
         review_minutes = _non_negative_query_float(query, "review_minutes")
         hourly_rate = _non_negative_query_float(query, "hourly_rate")
         rollup = _query_flag(query, "rollup", True)
+        trend_months = _trend_months(query)
         html_body = render_html(
             weekly_digest(
                 self.store,
@@ -800,6 +817,7 @@ class RadarHandler(BaseHTTPRequestHandler):
                 review_minutes=review_minutes,
                 hourly_rate=hourly_rate,
                 rollup=rollup,
+                trend_months=trend_months,
             )
         ).encode("utf-8")
         self._send(200, html_body, "text/html; charset=utf-8")
@@ -819,6 +837,7 @@ class RadarHandler(BaseHTTPRequestHandler):
         cost_centers = _body_list("cost_centers")
         review_minutes = _non_negative_query_float(query, "review_minutes")
         hourly_rate = _non_negative_query_float(query, "hourly_rate")
+        trend_months = _trend_months(query)
         self._send_json(
             deliver_digest(
                 self.store,
@@ -827,6 +846,7 @@ class RadarHandler(BaseHTTPRequestHandler):
                 cost_centers or None,
                 review_minutes,
                 hourly_rate,
+                trend_months,
             )
         )
 
