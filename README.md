@@ -87,8 +87,8 @@ python3 -m unittest discover -s tests -v
 | `GET /api/findings?status=open&min_amount=&entity=` | Priorisierte Auffälligkeiten; optional nach Rechnungs-Prüfstatus gefiltert (`?review_status=open\|reviewed\|all`), seitenweise (`?limit=`, `?offset=`) und sortiert (`?sort=`) |
 | `GET /api/findings/export` | Findings-Liste als CSV-Download (`text/csv`), optional gefiltert (`?status=`, `?min_amount=`, `?entity=`, `?review_status=`) |
 | `POST /api/findings/:id/feedback` | `{"verdict": "confirmed"|"false_alarm"}` |
-| `GET /api/digest/weekly[.html]?entity=&cost_center=` | Wöchentlicher Digest als JSON/HTML inkl. Aufschlüsselung `by_entity`/`by_cost_center`/`by_supplier`, optional auf Gesellschaften und Kostenstellen gefiltert (UND-verknüpft) |
-| `POST /api/digest/weekly/send` | Digest aktiv per Webhook/SMTP zustellen (`{"entities": ["DE01"], "cost_centers": ["KST-100"]}`); Webhook-Payload enthält die Aufschlüsselung, liefert je Kanal `sent`/`skipped`/`error` |
+| `GET /api/digest/weekly[.html]?entity=&cost_center=&rollup=` | Wöchentlicher Digest als JSON/HTML inkl. Aufschlüsselung `by_entity`/`by_cost_center`/`by_supplier` und konsolidiertem Rollup `by_entity_rollup` (offene Last + ROI je Gesellschaft inkl. `totals`), optional auf Gesellschaften und Kostenstellen gefiltert (UND-verknüpft); `?rollup=false` lässt den Rollup weg |
+| `POST /api/digest/weekly/send` | Digest aktiv per Webhook/SMTP zustellen (`{"entities": ["DE01"], "cost_centers": ["KST-100"]}`); Webhook-Payload enthält die Aufschlüsselung und den Rollup, liefert je Kanal `sent`/`skipped`/`error` |
 
 ### Kennzahlen je Gesellschaft und Kostenstelle
 
@@ -954,7 +954,8 @@ Der Wochen-Digest ist als JSON/HTML abrufbar und kann zusätzlich **aktiv
 zugestellt** werden — per Webhook (Slack-/Mattermost-kompatibles JSON mit
 Gesamtbetrag, Anzahl Findings, berücksichtigten Gesellschaften `entities`,
 berücksichtigten Kostenstellen `cost_centers`, der Aufschlüsselung
-`by_entity`/`by_cost_center`/`by_supplier` und Top-5-Auffälligkeiten) und/oder per SMTP als
+`by_entity`/`by_cost_center`/`by_supplier`, dem konsolidierten Rollup
+`by_entity_rollup` und Top-5-Auffälligkeiten) und/oder per SMTP als
 HTML-E-Mail. Beide Kanäle sind unabhängig: Fällt einer
 aus (`error`), wird der andere trotzdem versucht; ein nicht konfigurierter
 Kanal meldet `skipped`. Über `?entity=` und `?cost_center=` (Abruf) bzw.
@@ -1039,10 +1040,11 @@ denselben Semantiken wie die Blöcke `entities`/`cost_centers` aus `/api/stats`:
   `total_amount == 0.0`.
 - Die bestehenden Schlüssel (`generated_at`, `period_days`, `total_amount`,
   `finding_count`, `entities`, `cost_centers`, `stats`, `findings`) behalten
-  Name, Typ und Bedeutung. Der HTML-Digest zeigt unter der Zusammenfassung drei
-  kleine Tabellen („Gesellschaften“, „Kostenstellen“, „Lieferanten“); ein leerer
-  Block rendert **keine** Tabelle. Es kommen keine neuen Tabellen, Endpunkte oder
-  Laufzeit-Abhängigkeiten hinzu.
+  Name, Typ und Bedeutung; zusätzlich erscheint `by_entity_rollup` (siehe unten).
+  Der HTML-Digest zeigt unter der Zusammenfassung den konsolidierten Rollup
+  sowie drei kleine Tabellen („Gesellschaften“, „Kostenstellen“, „Lieferanten“);
+  ein leerer Block rendert **keine** Tabelle. Es kommen keine neuen Tabellen,
+  Endpunkte oder Laufzeit-Abhängigkeiten hinzu.
 
 ```sh
 # Wöchentlicher Digest inkl. by_entity/by_cost_center/by_supplier
@@ -1070,6 +1072,88 @@ curl -sS 'http://localhost:8080/api/digest/weekly?entity=DE01&cost_center=KST-10
     {"supplier": "ACME GmbH", "findings": 2, "open_amount": 40.0},
     {"supplier": "Zeta GmbH", "findings": 1, "open_amount": 20.0}
   ]
+}
+```
+
+### Konsolidierter Gruppen-Rollup (offene Last + ROI je Gesellschaft)
+
+Zusätzlich zur count-only-Aufschlüsselung liefert der Digest den Block
+`by_entity_rollup`, der pro Gesellschaft **offene Prüflast** und **realisierten
+ROI** in einer Zeile zusammenführt und mit einer `totals`-Zeile über den Konzern
+abschließt. Damit beantwortet die Montags-Nachricht ohne Web-UI die Frage *„Wo
+steht der Konzern, und welche Gesellschaft braucht als Nächstes Aufmerksamkeit?“*.
+
+Die Struktur ist `{"entities": [...], "totals": {...}}`. Jede Zeile trägt
+folgende Felder:
+
+| Feld | Bedeutung | Formel / Herkunft |
+| --- | --- | --- |
+| `entity` | Gesellschaft | `COALESCE(invoices.entity, 'default')`; in `totals` `null` |
+| `open_finding_count` | noch offene Findings | Findings ohne Feedback bzw. `status = 'open'` |
+| `open_amount` | offenes Abweichungsvolumen | Summe der Beträge offener Findings; identisch zu `GET /api/stats?entity=…` |
+| `open_review_minutes` | gebundener offener Prüfaufwand | `open_finding_count × review_minutes_per_finding` |
+| `open_review_cost_eur` | gebundener offener Prüfaufwand in EUR | `open_review_minutes / 60 × hourly_rate` |
+| `confirmed` | bestätigte Treffer | Feedback `confirmed` |
+| `false_alarm` | Fehlalarme | Feedback `false_alarm` |
+| `precision` | Trefferquote | `confirmed / (confirmed + false_alarm)`, sonst `null` |
+| `avoided_review_cost_eur` | vermiedener Prüfaufwand | `confirmed × review_minutes_per_finding / 60 × hourly_rate` |
+| `avoided_mispayment_eur` | vermiedene Fehlzahlung | Summe der Beträge bestätigter Findings |
+
+- Die Zahlen folgen exakt den bestehenden Endpunkten: `open_amount` entspricht
+  `GET /api/stats?entity=<Gesellschaft>` und `open_review_minutes` /
+  `open_review_cost_eur` denselben ROI-Annahmen wie `/api/review-workload`;
+  `confirmed`/`precision`/`avoided_*` entsprechen der Mathematik aus
+  `/api/stats/roi`. Die Aufwands- und Kostenfelder sind auf zwei Nachkommastellen
+  gerundet.
+- Zeilen sind **absteigend nach `open_amount`**, bei Gleichstand **aufsteigend
+  nach `entity`** sortiert. Eine Gesellschaft **ohne offene Findings erscheint
+  mit Nullen** (sofern sie Rechnungen hat).
+- `totals` trägt dieselben Felder (`entity: null`), ist die exakte Summe der
+  Gesellschaftszeilen über jedes numerische Feld (innerhalb der Rundung) und
+  berechnet `precision` **neu aus den aggregierten Zählern** (nie gemittelt).
+- Die Filter `?entity=` und `?cost_center=` gelten **UND-verknüpft** genau wie
+  für den Rest des Digests. Ohne Filter werden alle in den Rechnungen
+  vorkommenden Gesellschaften berichtet. Ein unbekannter Filterwert liefert
+  `200` mit leerem Rollup (`{"entities": [], "totals": …}`). Anders als
+  `by_entity` betrachtet der Rollup **alle** passenden Rechnungen, nicht nur das
+  interne Digest-`limit`, damit `open_amount` zu `/api/stats` passt.
+- Die Annahmen lassen sich wie bei den ROI-Endpunkten über
+  `?review_minutes=` und `?hourly_rate=` als What-if überschreiben.
+- Mit **`?rollup=false`** (bzw. `0`/`no`/`off`) wird der Block weggelassen; der
+  Abruf ist dann byte-identisch zum Digest vor dieser Erweiterung. Ohne Angabe
+  erscheint der Rollup standardmäßig in JSON, HTML-Tabelle, Webhook-Payload und
+  Weboberfläche. `POST /api/digest/weekly/send` liefert `by_entity_rollup` immer
+  im Webhook-Payload.
+
+```sh
+# Digest mit Rollup (Standard)
+curl -sS http://localhost:8080/api/digest/weekly
+
+# Rollup auf eine Gesellschaft begrenzen und Annahmen überschreiben
+curl -sS 'http://localhost:8080/api/digest/weekly?entity=DE01&review_minutes=5&hourly_rate=60'
+
+# Rollup weglassen (bisheriges Payload)
+curl -sS 'http://localhost:8080/api/digest/weekly?rollup=false'
+```
+
+```json
+{
+  "by_entity_rollup": {
+    "entities": [
+      {"entity": "DE02", "open_finding_count": 5, "open_amount": 900.0,
+       "open_review_minutes": 20.0, "open_review_cost_eur": 15.0,
+       "confirmed": 3, "false_alarm": 1, "precision": 0.75,
+       "avoided_review_cost_eur": 9.0, "avoided_mispayment_eur": 420.0},
+      {"entity": "DE01", "open_finding_count": 2, "open_amount": 300.0,
+       "open_review_minutes": 8.0, "open_review_cost_eur": 6.0,
+       "confirmed": 1, "false_alarm": 0, "precision": 1.0,
+       "avoided_review_cost_eur": 3.0, "avoided_mispayment_eur": 150.0}
+    ],
+    "totals": {"entity": null, "open_finding_count": 7, "open_amount": 1200.0,
+       "open_review_minutes": 28.0, "open_review_cost_eur": 21.0,
+       "confirmed": 4, "false_alarm": 1, "precision": 0.8,
+       "avoided_review_cost_eur": 12.0, "avoided_mispayment_eur": 570.0}
+  }
 }
 ```
 

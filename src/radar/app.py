@@ -134,6 +134,20 @@ def _non_negative_query_float(
     return value
 
 
+def _query_flag(query: Dict[str, List[str]], name: str, default: bool = True) -> bool:
+    """Read an optional boolean flag such as ``?rollup=false``.
+
+    Absent/empty values return ``default``. Recognized false values are ``0``,
+    ``false``, ``no`` and ``off`` (case-insensitive); any other non-empty value
+    is treated as true, so an explicit ``?rollup=true``/``?rollup=1`` keeps the
+    detail. This never raises, keeping the digest filters backwards compatible.
+    """
+    raw = query.get(name, [None])[0]
+    if raw is None or raw.strip() == "":
+        return default
+    return raw.strip().lower() not in ("0", "false", "no", "off")
+
+
 def _query_list(query: Dict[str, List[str]], name: str) -> List[str]:
     """Read an optional, repeatable query parameter as a sorted-by-input list.
 
@@ -731,15 +745,37 @@ class RadarHandler(BaseHTTPRequestHandler):
     def h_digest(self, params, query) -> None:
         entities = _query_list(query, "entity") or None
         cost_centers = _query_list(query, "cost_center") or None
+        review_minutes = _non_negative_query_float(query, "review_minutes")
+        hourly_rate = _non_negative_query_float(query, "hourly_rate")
+        rollup = _query_flag(query, "rollup", True)
         self._send_json(
-            weekly_digest(self.store, entities=entities, cost_centers=cost_centers)
+            weekly_digest(
+                self.store,
+                entities=entities,
+                cost_centers=cost_centers,
+                settings=self.settings,
+                review_minutes=review_minutes,
+                hourly_rate=hourly_rate,
+                rollup=rollup,
+            )
         )
 
     def h_digest_html(self, params, query) -> None:
         entities = _query_list(query, "entity") or None
         cost_centers = _query_list(query, "cost_center") or None
+        review_minutes = _non_negative_query_float(query, "review_minutes")
+        hourly_rate = _non_negative_query_float(query, "hourly_rate")
+        rollup = _query_flag(query, "rollup", True)
         html_body = render_html(
-            weekly_digest(self.store, entities=entities, cost_centers=cost_centers)
+            weekly_digest(
+                self.store,
+                entities=entities,
+                cost_centers=cost_centers,
+                settings=self.settings,
+                review_minutes=review_minutes,
+                hourly_rate=hourly_rate,
+                rollup=rollup,
+            )
         ).encode("utf-8")
         self._send(200, html_body, "text/html; charset=utf-8")
 
@@ -756,12 +792,16 @@ class RadarHandler(BaseHTTPRequestHandler):
 
         entities = _body_list("entities")
         cost_centers = _body_list("cost_centers")
+        review_minutes = _non_negative_query_float(query, "review_minutes")
+        hourly_rate = _non_negative_query_float(query, "hourly_rate")
         self._send_json(
             deliver_digest(
                 self.store,
                 self.settings,
                 entities or None,
                 cost_centers or None,
+                review_minutes,
+                hourly_rate,
             )
         )
 
