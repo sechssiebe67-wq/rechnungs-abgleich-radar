@@ -18,6 +18,7 @@ from .config import Settings
 from .db import Store
 from .digest import (
     empty_rollup,
+    empty_supplier_backlog_trend,
     empty_supplier_rollup,
     render_html,
     weekly_digest,
@@ -66,6 +67,8 @@ def _webhook_payload(digest: dict) -> dict:
         "by_entity_rollup": digest.get("by_entity_rollup") or empty_rollup(),
         "by_supplier_rollup": digest.get("by_supplier_rollup")
         or empty_supplier_rollup(),
+        "by_supplier_backlog_trend": digest.get("by_supplier_backlog_trend")
+        or empty_supplier_backlog_trend(),
         "top_findings": top,
     }
 
@@ -150,6 +153,7 @@ def deliver_digest(
     cost_centers: Optional[List[str]] = None,
     review_minutes: Optional[float] = None,
     hourly_rate: Optional[float] = None,
+    trend_months: Optional[int] = None,
 ) -> dict:
     """Deliver the current weekly digest over every configured channel.
 
@@ -157,7 +161,9 @@ def deliver_digest(
     the selected societies; ``cost_centers`` restricts it to the selected cost
     centers (AND-combined with ``entities``). ``review_minutes``/``hourly_rate``
     override the ROI assumptions for the consolidated ``by_entity_rollup`` (same
-    what-if switches as the ROI endpoints). Always returns both channel entries.
+    what-if switches as the ROI endpoints). ``trend_months`` forwards the
+    look-back window of the ``by_supplier_backlog_trend`` block (default ``2``).
+    Always returns both channel entries.
     Unconfigured channels are reported as ``skipped``; a failure in one channel
     is isolated from the other.
     """
@@ -168,6 +174,7 @@ def deliver_digest(
         settings=settings,
         review_minutes=review_minutes,
         hourly_rate=hourly_rate,
+        trend_months=trend_months,
     )
 
     webhook_configured = bool(settings.digest_webhook_url)

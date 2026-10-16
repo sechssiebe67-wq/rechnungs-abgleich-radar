@@ -38,6 +38,23 @@ def empty_supplier_rollup() -> dict:
     return empty_rollup("supplier")
 
 
+def empty_supplier_backlog_trend() -> dict:
+    """Return a well-formed, zeroed ``by_supplier_backlog_trend`` block."""
+    totals = {
+        "supplier": None,
+        "latest_month": None,
+        "latest_open_amount": 0.0,
+        "previous_month": None,
+        "previous_open_amount": 0.0,
+        "delta_open_amount": 0.0,
+        "delta_open_finding_count": 0,
+        "open_review_minutes": 0.0,
+        "open_review_cost_eur": 0.0,
+        "top_invoice": None,
+    }
+    return {"suppliers": [], "totals": totals}
+
+
 def weekly_digest(
     store: Store,
     limit: int = 100,
@@ -47,6 +64,7 @@ def weekly_digest(
     review_minutes: Optional[float] = None,
     hourly_rate: Optional[float] = None,
     rollup: bool = True,
+    trend_months: Optional[int] = None,
 ) -> dict:
     """Build the weekly digest, optionally restricted to selected societies.
 
@@ -84,6 +102,12 @@ def weekly_digest(
     ``open_finding_count`` descending, then ``supplier`` ascending. Both blocks
     are gated by the same ``rollup`` switch; passing ``rollup=False`` omits them
     entirely to reproduce the pre-rollup payload.
+
+    The same switch also gates ``by_supplier_backlog_trend``, the compact
+    per-supplier time dimension derived from
+    :meth:`Store.supplier_backlog_trend` (newest month vs. the previous month,
+    ``delta_open_amount``, bound effort and the concentrating ``top_invoice``).
+    ``trend_months`` forwards the look-back window (default ``2``, ``>= 2``).
     """
     findings = store.list_findings(
         status="open", entities=entities, cost_centers=cost_centers
@@ -117,6 +141,14 @@ def weekly_digest(
         )
         digest["by_supplier_rollup"] = store.supplier_rollup(
             settings, entities, cost_centers, review_minutes, hourly_rate
+        )
+        digest["by_supplier_backlog_trend"] = store.supplier_backlog_trend(
+            settings,
+            entities,
+            cost_centers,
+            review_minutes,
+            hourly_rate,
+            trend_months,
         )
     return digest
 
@@ -317,6 +349,67 @@ def _supplier_rollup_html(digest: dict) -> str:
     )
 
 
+def _top_invoice_label(invoice: Optional[dict]) -> str:
+    """Render a short, escaped label for a ``top_invoice`` (or ``—``)."""
+    if not invoice:
+        return "—"
+    number = invoice.get("invoice_number")
+    parts = [str(number)] if number else []
+    if invoice.get("entity"):
+        parts.append(str(invoice["entity"]))
+    label = " · ".join(parts) or ("#%s" % invoice.get("id"))
+    return html.escape(label)
+
+
+def _supplier_backlog_trend_html(digest: dict) -> str:
+    """Render the per-supplier backlog trend with a totals row."""
+    block = digest.get("by_supplier_backlog_trend") or {}
+    rows = block.get("suppliers") or []
+    totals = block.get("totals")
+    if not rows:
+        return ""
+
+    def _number(value):
+        if value is None:
+            return "n/a"
+        return "%.2f" % float(value)
+
+    body_rows = [(row, False) for row in rows]
+    if totals is not None:
+        body_rows.append((dict(totals, supplier="Gesamt"), True))
+    cells: List[str] = []
+    for row, is_total in body_rows:
+        label = html.escape(str(row.get("supplier") or "Gesamt"))
+        if is_total:
+            label = "<strong>%s</strong>" % label
+        cells.append(
+            "<tr>"
+            "<td>{supplier}</td>"
+            "<td>{latest_month}</td>"
+            "<td style='text-align:right'>{delta:.2f} EUR</td>"
+            "<td style='text-align:right'>{cost} EUR</td>"
+            "<td>{top_invoice}</td>"
+            "</tr>".format(
+                supplier=label,
+                latest_month=html.escape(str(row.get("latest_month") or "—")),
+                delta=float(row.get("delta_open_amount", 0) or 0),
+                cost=_number(row.get("open_review_cost_eur")),
+                top_invoice=_top_invoice_label(row.get("top_invoice")),
+            )
+        )
+    header = (
+        "<tr><th>Lieferant</th><th>Neuester Monat</th>"
+        "<th>Delta offenes Volumen</th><th>Offener Aufwand (EUR)</th>"
+        "<th>Top-Rechnung</th></tr>"
+    )
+    return (
+        "<h3>Lieferanten-Backlog-Trend (neuester Monat vs. Vormonat)</h3>\n"
+        "<table border=\"1\" cellpadding=\"6\" cellspacing=\"0\" width=\"100%%\">\n"
+        "<thead>%s</thead>\n<tbody>\n%s\n</tbody></table>"
+        % (header, "\n".join(cells))
+    )
+
+
 def render_html(digest: dict) -> str:
     rows: List[str] = []
     for finding in digest["findings"]:
@@ -356,6 +449,7 @@ def render_html(digest: dict) -> str:
     breakdown = _breakdown_html(digest)
     rollup = _rollup_html(digest)
     supplier_rollup = _supplier_rollup_html(digest)
+    backlog_trend = _supplier_backlog_trend_html(digest)
     return """<!doctype html>
 <html lang="de">
 <head><meta charset="utf-8"><title>Rechnungs-Abgleich-Radar — Wochen-Digest</title></head>
@@ -369,6 +463,7 @@ def render_html(digest: dict) -> str:
 {precision}</p>
 {rollup}
 {supplier_rollup}
+{backlog_trend}
 {breakdown}
 <table border="1" cellpadding="6" cellspacing="0" width="100%">
 <thead><tr><th>Gesellschaft</th><th>Art</th><th>Begründung</th><th>Betrag</th><th>Referenz</th></tr></thead>
@@ -389,6 +484,7 @@ Rechnungs-Abgleich-Radar. Zahlungsausführung ist nicht Teil dieses Systems.</p>
         precision=precision_text,
         rollup=rollup,
         supplier_rollup=supplier_rollup,
+        backlog_trend=backlog_trend,
         breakdown=breakdown,
         body=body,
     )
