@@ -76,6 +76,21 @@ die die Gesellschaft im Bucket-Schlüssel behält, fasst sie Rechnungen
 verschiedener Gesellschaften mit derselben Kostenstelle zusammen. Damit ist die
 Kostenstellen-Zeitreihe auch ohne Web-UI für Kostenstellen-Controller nutzbar.
 
+Der Wochen-Digest trägt diese Kostenstellen-Zeitreihe schließlich direkt in die
+Montags-Nachricht: Der neue Block **`by_cost_center_backlog_trend`** spiegelt den
+Lieferanten-Backlog-Trend `by_supplier_backlog_trend`, gruppiert aber je
+`(Monat, Gesellschaft, Kostenstelle)` und vergleicht je Gruppe den neuesten Monat
+gegen den Vormonat. Er beantwortet damit aus dem Digest heraus — ohne Web-UI —
+*„Welche Kostenstelle baut über die letzten Monate Rückstand auf, und wie viel
+Aufwand bindet sie?“*: je Zeile stehen `delta_open_amount`, der gebundene
+Prüfaufwand (`open_review_minutes`/`open_review_cost_eur`) des neuesten Monats und
+die Rechnung, die den Rückstand konzentriert (`top_invoice`). Während
+`by_cost_center_rollup` den **aktuellen** Stand je `(Gesellschaft, Kostenstelle)`
+zeigt (offene Last plus realisierter ROI), liefert
+`by_cost_center_backlog_trend` dazu die **zeitliche Entwicklung** auf derselben
+Achse; zusammen mit `by_supplier_backlog_trend` deckt der Digest so beide
+operativen Trend-Achsen (Lieferant und Kostenstelle) ab.
+
 ## Intended users
 
 Finanz- und Kreditorenbuchhaltungs-Teams in KMU (5–50 Mitarbeitende) mit
@@ -120,7 +135,13 @@ Derselbe Digest trägt mit `by_supplier_backlog_trend` außerdem die **zeitliche
 Entwicklung** je Lieferant (neuester Monat gegen Vormonat, `delta_open_amount`,
 gebundener Prüfaufwand und die Rechnung, die den Rückstand konzentriert) — damit
 sieht der Einkauf ohne Web-UI, welcher Lieferant über die letzten Monate
-Rückstand aufbaut, nicht nur wer ihn aktuell hält.
+Rückstand aufbaut, nicht nur wer ihn aktuell hält. Für die
+**Kostenstellen-Controller** liefert derselbe Digest mit
+`by_cost_center_backlog_trend` die analoge **zeitliche Entwicklung** je
+`(Gesellschaft, Kostenstelle)`: neuester Monat gegen Vormonat, `delta_open_amount`,
+gebundener Prüfaufwand und die Rechnung, die den Rückstand konzentriert — so
+erkennen sie aus der Montags-Nachricht, welche Kostenstelle über die letzten
+Monate Rückstand aufbaut, und können sie direkt ansprechen.
 Bei der Abarbeitung des Wochen-Digests und der
 Findings-Liste arbeiten sie zuerst die Rechnungen mit dem **größten offenen
 Prüfvolumen** ab (viele offene Findings bzw. hoher offener Betrag), weil dort pro
@@ -721,9 +742,61 @@ persistentem Speicher.
     wirken konsistent zur Zeitreihe. Ein leerer Block rendert in HTML keine
     Tabelle; `?rollup=false` lässt `by_supplier_backlog_trend` **gemeinsam** mit
     `by_entity_rollup`, `by_supplier_rollup` und `by_cost_center_rollup` weg.
-  - JSON, HTML-Tabelle (Lieferant, neuester Monat, Δ offenes Volumen, offener
-    Aufwand EUR, Top-Rechnung), Webhook-Payload und Weboberfläche zeigen den
-    Block standardmäßig. Rein additive, rückwärtskompatible Erweiterung.
+   - JSON, HTML-Tabelle (Lieferant, neuester Monat, Δ offenes Volumen, offener
+     Aufwand EUR, Top-Rechnung), Webhook-Payload und Weboberfläche zeigen den
+     Block standardmäßig. Rein additive, rückwärtskompatible Erweiterung.
+- **Kostenstellen-Backlog-Trend im Wochen-Digest**
+  (`by_cost_center_backlog_trend`): Der Digest beantwortet dieselbe
+  Kostenstellen-Frage wie `GET /api/review-workload/by-cost-center/timeseries`,
+  aber **direkt in der Montags-Nachricht** und ohne Web-UI — *welche
+  Kostenstelle baut die offene Prüflast über die Monate auf, wie viel Aufwand
+  bindet das, und welche Rechnung konzentriert den Rückstand?* Der Block ist das
+  Kostenstellen-Gegenstück zu `by_supplier_backlog_trend` und eine kompakte,
+  begrenzte Ableitung der bestehenden Zeitreihen-Logik
+  (`Store.cost_center_backlog_trend` ruft dieselbe Aggregation je
+  `(Monat, Gesellschaft, Kostenstelle)` auf; keine neuen Tabellen, Indizes oder
+  Laufzeit-Abhängigkeiten).
+  - Der Block ist `{"cost_centers": [...], "totals": {...}, "parameters": {...}}`.
+    Je `(Gesellschaft, Kostenstelle)` eine Zeile mit `entity`, `cost_center`,
+    `latest_month`, `latest_open_amount`, `previous_month`,
+    `previous_open_amount`, `delta_open_amount`, `open_review_minutes`,
+    `open_review_cost_eur` und `top_invoice`.
+  - Gruppiert wird je `(entity, cost_center, month)` mit
+    `month = strftime('%Y-%m', invoices.created_at)`; nur Rechnungen mit
+    mindestens einem offenen Finding zählen. Je Gruppe werden die **zwei
+    jüngsten vorkommenden Monate** verglichen: `delta_open_amount` ist
+    `latest − previous`. Erscheint eine Gruppe nur in einem Monat, ist
+    `previous_month == null`, `previous_open_amount == 0.0` und das Delta
+    entspricht dem neuesten Wert.
+  - `open_review_minutes`/`open_review_cost_eur` sind die gebundene Prüflast des
+    **neuesten Monats** nach denselben ROI-Annahmen wie
+    `/api/review-workload` (`open_review_minutes = open_finding_count ×
+    review_minutes_per_finding`, `open_review_cost_eur = open_review_minutes /
+    60 × hourly_rate`, auf zwei Nachkommastellen). `top_invoice` ist die
+    Rechnung mit dem größten offenen Volumen im neuesten Monat (Gleichstand:
+    `open_finding_count` absteigend, dann `id` aufsteigend) mit `id`,
+    `invoice_number`, `entity`, `cost_center`, `open_finding_count` und
+    `open_amount`; `null`, wenn keine qualifiziert.
+  - Sortierung deterministisch: absteigend nach `delta_open_amount`, bei
+    Gleichstand aufsteigend nach `entity`, dann `cost_center`. `totals` trägt
+    dieselbe Feldstruktur (`entity == null` und `cost_center == null`,
+    `latest_month`/`previous_month == null`) und aggregiert exakt über alle
+    gelieferten Zeilen; `top_invoice` ist die global größte Rechnung.
+    `parameters` weist `months`, `review_minutes_per_finding` und
+    `review_hourly_rate_eur` aus.
+  - `?trend_months=` (Default `2`, muss `>= 2` sein, ungültig → `400` mit
+    JSON-Fehlerkörper) weitet das betrachtete Kalenderfenster (Anker: neuester
+    Monat); je Gruppe werden daraus die zwei jüngsten vorkommenden Monate
+    verglichen. Die `?entity=`/`?cost_center=`-Filter (UND-verknüpft, unbekannte
+    Werte → `200` mit leerer `cost_centers`-Liste und genullter `totals`-Zeile)
+    wirken konsistent zur Zeitreihe. Ein leerer Block rendert in HTML keine
+    Tabelle; `?rollup=false` lässt `by_cost_center_backlog_trend` **gemeinsam**
+    mit `by_entity_rollup`, `by_supplier_rollup`, `by_cost_center_rollup` und
+    `by_supplier_backlog_trend` weg.
+  - JSON, HTML-Tabelle (Gesellschaft, Kostenstelle, neuester Monat, Δ offenes
+    Volumen, offener Aufwand EUR, Top-Rechnung), Webhook-Payload und
+    Weboberfläche zeigen den Block standardmäßig. Rein additive,
+    rückwärtskompatible Lese-Erweiterung.
 - **Digest-Versand per Webhook und SMTP** (`radar/notify.py`)
   - Aktive Zustellung des Wochen-Digests statt manuellem Abruf.
   - **Webhook** (Slack-/Mattermost-kompatibles JSON mit Gesamtbetrag, Anzahl
@@ -945,6 +1018,14 @@ priorisiert die Freigabe-Entscheidung.
     **Nächster sinnvoller Schritt:** einen eigenen
     **Kostenstellen-Digest** (offene Last + ROI je Kostenstelle, neuester Monat
     gegen Vormonat) aktiv an die Kostenstellen-Controller zuzustellen.
+    **Umgesetzt:** Den Trend je `(Gesellschaft, Kostenstelle)` (neuester Monat
+    gegen Vormonat, `delta_open_amount`, gebundener Prüfaufwand und
+    `top_invoice`) trägt jetzt der Wochen-Digest als Block
+    `by_cost_center_backlog_trend` direkt mit, sodass die Montags-Nachricht die
+    Frage *„welche Kostenstelle baut über die letzten Monate Rückstand auf?“*
+    ohne Web-UI beantwortet. **Nächster sinnvoller Schritt:** den bereits
+    bestehenden Digest-Versand (`POST /api/digest/weekly/send`) um einen
+    eigenen, nur auf Kostenstellen zugeschnittenen Versandkanal zu ergänzen.
 
 ## Validation plan (Bezug zur Produkthypothese)
 
@@ -1018,7 +1099,14 @@ steht und welche Gesellschaft als Nächstes Aufmerksamkeit braucht; der
 **Lieferanten-Rollup** (`by_supplier_rollup`) ergänzt dieselbe Sicht je Lieferant
 für den Einkauf — offene Last, realisierter ROI und `totals`-Summenzeile —,
 sodass die Montags-Mail zusätzlich „welcher Lieferant bindet aktuell die meiste
-offene Prüflast?“ direkt beantwortet. Der **Kostenstellen-Rollup**
+offene Prüflast?“ direkt beantwortet. Der **Kostenstellen-Backlog-Trend**
+(`by_cost_center_backlog_trend`) ergänzt dieselbe Montags-Mail um die
+**zeitliche** Kostenstellen-Sicht: neuester Monat gegen Vormonat je
+`(Gesellschaft, Kostenstelle)` inkl. `delta_open_amount`, gebundenem
+Prüfaufwand und der Rechnung mit dem größten Rückstand. Damit erkennt der
+Concierge-Test aus der wöchentlichen Nachricht heraus, welche Kostenstelle über
+die letzten Monate Rückstand aufbaut, ohne die Weboberfläche zu öffnen. Der
+**Kostenstellen-Rollup**
 (`by_cost_center_rollup`) schließt die operative Lücke der Kostenstellen-
 Controller: Dieselbe Montags-Mail weist offene Last und realisierten ROI je
 `(Gesellschaft, Kostenstelle)` mit `totals`-Summenzeile aus und beantwortet

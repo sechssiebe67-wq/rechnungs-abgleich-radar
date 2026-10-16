@@ -152,6 +152,11 @@ DEFAULT_REVIEW_WORKLOAD_TIMESERIES_MONTHS = 6
 # supplier against the previous one, matching ``?trend_months=`` (default 2).
 DEFAULT_SUPPLIER_BACKLOG_TREND_MONTHS = 2
 
+# Default number of calendar months the digest's cost-center backlog trend looks
+# back. As with the supplier trend, two months are the minimum needed to compare
+# a group's newest month against its previous one (``?trend_months=``, default 2).
+DEFAULT_COST_CENTER_BACKLOG_TREND_MONTHS = 2
+
 # Fields of one per-society rollup row below the digest's ``by_entity_rollup``
 # key (in addition to the ``entity`` key). The ``totals`` row carries the exact
 # same fields with ``entity`` set to ``None`` so all rows share one shape.
@@ -1511,6 +1516,156 @@ class Store:
             "top_invoice": _pick_top_invoice(top_candidates),
         }
         return {"suppliers": suppliers, "totals": totals}
+
+    def cost_center_backlog_trend(
+        self,
+        settings: Optional[Settings] = None,
+        months: Optional[int] = None,
+        entities: Optional[List[str]] = None,
+        cost_centers: Optional[List[str]] = None,
+        review_minutes: Optional[float] = None,
+        hourly_rate: Optional[float] = None,
+    ) -> dict:
+        """Compact per-(society, cost-center) backlog trend for the digest.
+
+        The cost-center counterpart of :meth:`supplier_backlog_trend`. Reuses
+        :meth:`review_workload_timeseries` (same ``(month, entity, cost_center)``
+        aggregation, same ROI assumptions, same filters) and folds its rows down
+        to **one row per ``(entity, cost_center)``** that compares the group's
+        two most recent months: it answers *which cost center is accumulating
+        open review load month over month, and which single invoice concentrates
+        that backlog?*
+
+        Each row carries ``entity``, ``cost_center``, ``latest_month``,
+        ``latest_open_amount``, ``previous_month``, ``previous_open_amount``,
+        ``delta_open_amount`` (``latest - previous``), the bound effort of the
+        latest month ``open_review_minutes`` / ``open_review_cost_eur`` and
+        ``top_invoice`` — the largest invoice of the latest month (ties:
+        ``open_finding_count`` descending, then ``id`` ascending) with ``id``,
+        ``invoice_number``, ``entity``, ``cost_center``, ``open_finding_count``
+        and ``open_amount``. A group present in only one month keeps
+        ``previous_month = None``, ``previous_open_amount = 0.0`` and a delta
+        equal to its latest value. ``top_invoice`` is ``None`` when nothing
+        qualifies.
+
+        Rows are sorted by ``delta_open_amount`` descending, then ``entity``
+        ascending, then ``cost_center`` ascending (deterministic). The ``totals``
+        row mirrors the field shape (``entity``/``cost_center``/``latest_month``/
+        ``previous_month`` are ``None``) and sums every numeric field over the
+        delivered rows; its ``top_invoice`` is the global largest. The
+        ``parameters`` block echoes the effective ``months``,
+        ``review_minutes_per_finding`` and ``review_hourly_rate_eur``.
+
+        The ``months`` window (default
+        :data:`DEFAULT_COST_CENTER_BACKLOG_TREND_MONTHS`, must be ``>= 2``)
+        forwards to the time series, so it controls how far back the trend
+        looks. Only existing aggregates are reused — no new tables, columns or
+        runtime dependencies.
+        """
+        window = (
+            DEFAULT_COST_CENTER_BACKLOG_TREND_MONTHS
+            if months is None
+            else int(months)
+        )
+        if window < 2:
+            raise ValueError("months must be >= 2")
+
+        series = self.review_workload_timeseries(
+            settings,
+            months=window,
+            entities=entities,
+            cost_centers=cost_centers,
+            review_minutes=review_minutes,
+            hourly_rate=hourly_rate,
+        )
+
+        by_group: dict = {}
+        for row in series["rows"]:
+            by_group.setdefault((row["entity"], row["cost_center"]), []).append(row)
+
+        cost_center_rows: List[dict] = []
+        for (entity, cost_center), rows in by_group.items():
+            rows.sort(key=lambda entry: entry["month"])
+            latest = rows[-1]
+            previous = rows[-2] if len(rows) >= 2 else None
+            latest_amount = round(float(latest["open_amount"]), 2)
+            previous_amount = (
+                round(float(previous["open_amount"]), 2)
+                if previous is not None
+                else 0.0
+            )
+            top = latest["top_invoice"]
+            if top is not None:
+                top = {
+                    "id": top["id"],
+                    "invoice_number": top["invoice_number"],
+                    "entity": entity,
+                    "cost_center": cost_center,
+                    "open_finding_count": top["open_finding_count"],
+                    "open_amount": top["open_amount"],
+                }
+            cost_center_rows.append(
+                {
+                    "entity": entity,
+                    "cost_center": cost_center,
+                    "latest_month": latest["month"],
+                    "latest_open_amount": latest_amount,
+                    "previous_month": (
+                        previous["month"] if previous is not None else None
+                    ),
+                    "previous_open_amount": previous_amount,
+                    "delta_open_amount": round(
+                        latest_amount - previous_amount, 2
+                    ),
+                    "open_review_minutes": round(
+                        float(latest["open_review_minutes"]), 2
+                    ),
+                    "open_review_cost_eur": round(
+                        float(latest["open_review_cost_eur"]), 2
+                    ),
+                    "top_invoice": top,
+                }
+            )
+
+        cost_center_rows.sort(
+            key=lambda entry: (
+                -entry["delta_open_amount"],
+                entry["entity"] or "",
+                entry["cost_center"] or "",
+            )
+        )
+
+        total_minutes = round(
+            sum(entry["open_review_minutes"] for entry in cost_center_rows), 2
+        )
+        top_candidates = [
+            entry["top_invoice"] for entry in cost_center_rows if entry["top_invoice"]
+        ]
+        totals = {
+            "entity": None,
+            "cost_center": None,
+            "latest_month": None,
+            "latest_open_amount": round(
+                sum(entry["latest_open_amount"] for entry in cost_center_rows), 2
+            ),
+            "previous_month": None,
+            "previous_open_amount": round(
+                sum(entry["previous_open_amount"] for entry in cost_center_rows), 2
+            ),
+            "delta_open_amount": round(
+                sum(entry["delta_open_amount"] for entry in cost_center_rows), 2
+            ),
+            "open_review_minutes": total_minutes,
+            "open_review_cost_eur": round(
+                sum(entry["open_review_cost_eur"] for entry in cost_center_rows), 2
+            ),
+            "top_invoice": _pick_top_invoice(top_candidates),
+        }
+        return {
+            "cost_centers": cost_center_rows,
+            "totals": totals,
+            "parameters": series["parameters"],
+        }
 
     def list_entities(self) -> List[str]:
         """Return the distinct, sorted entities occurring in invoices."""

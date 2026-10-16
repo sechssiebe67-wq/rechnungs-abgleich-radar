@@ -89,8 +89,8 @@ python3 -m unittest discover -s tests -v
 | `GET /api/findings?status=open&min_amount=&entity=` | Priorisierte Auffälligkeiten; optional nach Rechnungs-Prüfstatus gefiltert (`?review_status=open\|reviewed\|all`), seitenweise (`?limit=`, `?offset=`) und sortiert (`?sort=`) |
 | `GET /api/findings/export` | Findings-Liste als CSV-Download (`text/csv`), optional gefiltert (`?status=`, `?min_amount=`, `?entity=`, `?review_status=`) |
 | `POST /api/findings/:id/feedback` | `{"verdict": "confirmed"|"false_alarm"}` |
-| `GET /api/digest/weekly[.html]?entity=&cost_center=&rollup=&trend_months=` | Wöchentlicher Digest als JSON/HTML inkl. Aufschlüsselung `by_entity`/`by_cost_center`/`by_supplier`, konsolidierten Rollups `by_entity_rollup` (offene Last + ROI je Gesellschaft), `by_supplier_rollup` (offene Last + ROI je Lieferant) und `by_cost_center_rollup` (offene Last + ROI je Gesellschaft und Kostenstelle, je inkl. `totals`) sowie dem Lieferanten-Backlog-Trend `by_supplier_backlog_trend` (neuester Monat vs. Vormonat, je inkl. `totals`), optional auf Gesellschaften und Kostenstellen gefiltert (UND-verknüpft); `?trend_months=` (Default 2, `>= 2`) steuert das Trendfenster; `?rollup=false` lässt alle Rollup-/Trend-Blöcke weg |
-| `POST /api/digest/weekly/send` | Digest aktiv per Webhook/SMTP zustellen (`{"entities": ["DE01"], "cost_centers": ["KST-100"]}`); Webhook-Payload enthält die Aufschlüsselung, alle drei Rollups und den Backlog-Trend, liefert je Kanal `sent`/`skipped`/`error` |
+| `GET /api/digest/weekly[.html]?entity=&cost_center=&rollup=&trend_months=` | Wöchentlicher Digest als JSON/HTML inkl. Aufschlüsselung `by_entity`/`by_cost_center`/`by_supplier`, konsolidierten Rollups `by_entity_rollup` (offene Last + ROI je Gesellschaft), `by_supplier_rollup` (offene Last + ROI je Lieferant) und `by_cost_center_rollup` (offene Last + ROI je Gesellschaft und Kostenstelle, je inkl. `totals`), dem Lieferanten-Backlog-Trend `by_supplier_backlog_trend` (neuester Monat vs. Vormonat) sowie dem Kostenstellen-Backlog-Trend `by_cost_center_backlog_trend` (neuester Monat vs. Vormonat je Gesellschaft und Kostenstelle, inkl. `totals` und `parameters`); optional auf Gesellschaften und Kostenstellen gefiltert (UND-verknüpft); `?trend_months=` (Default 2, `>= 2`) steuert das Trendfenster beider Backlog-Trends; `?rollup=false` lässt alle Rollup-/Trend-Blöcke weg |
+| `POST /api/digest/weekly/send` | Digest aktiv per Webhook/SMTP zustellen (`{"entities": ["DE01"], "cost_centers": ["KST-100"]}`); Webhook-Payload enthält die Aufschlüsselung, alle drei Rollups sowie den Lieferanten- und den Kostenstellen-Backlog-Trend, liefert je Kanal `sent`/`skipped`/`error` |
 
 ### Kennzahlen je Gesellschaft und Kostenstelle
 
@@ -1266,10 +1266,10 @@ denselben Semantiken wie die Blöcke `entities`/`cost_centers` aus `/api/stats`:
 - Die bestehenden Schlüssel (`generated_at`, `period_days`, `total_amount`,
   `finding_count`, `entities`, `cost_centers`, `stats`, `findings`) behalten
   Name, Typ und Bedeutung; zusätzlich erscheinen `by_entity_rollup`,
-  `by_supplier_rollup`, `by_cost_center_rollup` und
-  `by_supplier_backlog_trend` (siehe unten). Der
-  HTML-Digest zeigt unter der Zusammenfassung die konsolidierten Rollups, den
-  Lieferanten-Backlog-Trend sowie drei kleine Tabellen
+  `by_supplier_rollup`, `by_cost_center_rollup`,
+  `by_supplier_backlog_trend` und `by_cost_center_backlog_trend` (siehe unten).
+  Der HTML-Digest zeigt unter der Zusammenfassung die konsolidierten Rollups,
+  die beiden Backlog-Trends sowie drei kleine Tabellen
   („Gesellschaften“, „Kostenstellen“, „Lieferanten“); ein leerer Block rendert
   **keine** Tabelle. Es kommen keine neuen Tabellen, Endpunkte oder
   Laufzeit-Abhängigkeiten hinzu.
@@ -1349,8 +1349,8 @@ folgende Felder:
   `?review_minutes=` und `?hourly_rate=` als What-if überschreiben.
 - Mit **`?rollup=false`** (bzw. `0`/`no`/`off`) werden **alle** Rollup- und
   Trend-Blöcke (`by_entity_rollup`, `by_supplier_rollup`,
-  `by_cost_center_rollup` und
-  `by_supplier_backlog_trend`) weggelassen; der Abruf ist dann
+  `by_cost_center_rollup`, `by_supplier_backlog_trend` und
+  `by_cost_center_backlog_trend`) weggelassen; der Abruf ist dann
   byte-identisch zum Digest vor dieser Erweiterung. Ohne Angabe erscheinen die
   Rollups standardmäßig in JSON, HTML-Tabellen, Webhook-Payload und
   Weboberfläche. `POST /api/digest/weekly/send` liefert alle Blöcke immer im
@@ -1601,6 +1601,87 @@ curl -sS 'http://localhost:8080/api/digest/weekly?trend_months=6'
        "top_invoice": {"id": 12, "invoice_number": "RE-12", "entity": "DE01",
                        "cost_center": "KST-100", "open_finding_count": 3,
                        "open_amount": 600.0}}
+  }
+}
+```
+
+### Kostenstellen-Backlog-Trend im Wochen-Digest
+
+Das Gegenstück zum Lieferanten-Trend auf der Kostenstellen-Achse. Der
+schnappschussartige `by_cost_center_rollup` sagt, **welche Kostenstelle**
+aktuell die meiste offene Prüflast bindet. Für die Kostenstellen-Controller
+fehlt darin die **Zeitdimension**: *Welche Kostenstelle baut die Last über die
+Monate auf?* Dieselbe Montags-Nachricht trägt dafür den kompakten, begrenzten
+Block `by_cost_center_backlog_trend`, der die Logik von
+`GET /api/review-workload/by-cost-center/timeseries` wiederverwendet (gleiche
+`(Monat, Gesellschaft, Kostenstelle)`-Aggregation, gleiche Annahmen, gleiche
+Filter). Die Struktur ist
+`{"cost_centers": [...], "totals": {...}, "parameters": {...}}`.
+
+| Feld | Bedeutung |
+| --- | --- |
+| `entity` | Gesellschaft (`COALESCE(invoices.entity, 'default')`); in `totals` `null` |
+| `cost_center` | Kostenstelle (`COALESCE(invoices.cost_center, '')`, leer als `""`); in `totals` `null` |
+| `latest_month` | jüngster Monat (`strftime('%Y-%m', created_at)`), in dem die Gruppe offene Findings hat; in `totals` `null` |
+| `latest_open_amount` | offenes Volumen dieses Monats |
+| `previous_month` | zweitjüngster vorkommender Monat; `null`, wenn es nur einen gibt |
+| `previous_open_amount` | offenes Volumen des Vormonats; `0.0` ohne Vormonat |
+| `delta_open_amount` | `latest_open_amount − previous_open_amount` |
+| `open_review_minutes` | gebundener Prüfaufwand des neuesten Monats (`open_finding_count × review_minutes_per_finding`) |
+| `open_review_cost_eur` | `open_review_minutes / 60 × hourly_rate`, auf zwei Nachkommastellen |
+| `top_invoice` | größte Rechnung des neuesten Monats (`id`, `invoice_number`, `entity`, `cost_center`, `open_finding_count`, `open_amount`) oder `null` |
+
+- Gruppiert wird je `(entity, cost_center)`. Pro Gruppe werden die **zwei
+  jüngsten vorkommenden Monate** verglichen. Eine Kombination, die nur in einem
+  Monat auftaucht, hat `previous_month: null`, `previous_open_amount: 0.0` und
+  ein Delta gleich dem neuesten Wert. `top_invoice` wählt mit derselben
+  Tie-Break-Kette wie die Zeitreihe (`open_amount` absteigend,
+  `open_finding_count` absteigend, `id` aufsteigend).
+- Zeilen sind deterministisch sortiert: **absteigend nach
+  `delta_open_amount`**, bei Gleichstand **aufsteigend nach `entity`**, dann
+  **aufsteigend nach `cost_center`**. `totals`
+  (`entity: null`, `cost_center: null`) summiert exakt über alle gelieferten
+  Zeilen; sein `top_invoice` ist die global größte Rechnung. `parameters` weist
+  `months`, `review_minutes_per_finding` und `review_hourly_rate_eur` aus.
+- `?trend_months=` (Default `2`, muss `>= 2` sein, sonst `400`) weitet das
+  betrachtete Kalenderfenster (Anker: neuester Monat). Die Filter
+  `?entity=`/`?cost_center=` (UND-verknüpft) wirken wie bei der Zeitreihe; ein
+  unbekannter Wert liefert `200` mit leerer `cost_centers`-Liste und genullter
+  `totals`-Zeile, keinen Fehler. Es kommen keine neuen Tabellen, Spalten,
+  Endpunkte oder Laufzeit-Abhängigkeiten hinzu.
+
+```sh
+# Digest inkl. Kostenstellen-Backlog-Trend (Standard: 2 Monate)
+curl -sS http://localhost:8080/api/digest/weekly
+
+# Nur eine Gesellschaft/Kostenstelle
+curl -sS 'http://localhost:8080/api/digest/weekly?entity=DE01&cost_center=KST-100'
+
+# Trendfenster auf 6 Monate weiten
+curl -sS 'http://localhost:8080/api/digest/weekly?trend_months=6'
+```
+
+```json
+{
+  "by_cost_center_backlog_trend": {
+    "cost_centers": [
+      {"entity": "DE01", "cost_center": "KST-100", "latest_month": "2026-02",
+       "latest_open_amount": 700.0, "previous_month": "2026-01",
+       "previous_open_amount": 400.0, "delta_open_amount": 300.0,
+       "open_review_minutes": 16.0, "open_review_cost_eur": 12.0,
+       "top_invoice": {"id": 12, "invoice_number": "RE-12", "entity": "DE01",
+                       "cost_center": "KST-100", "open_finding_count": 3,
+                       "open_amount": 600.0}}
+    ],
+    "totals": {"entity": null, "cost_center": null, "latest_month": null,
+       "latest_open_amount": 700.0, "previous_month": null,
+       "previous_open_amount": 400.0, "delta_open_amount": 300.0,
+       "open_review_minutes": 16.0, "open_review_cost_eur": 12.0,
+       "top_invoice": {"id": 12, "invoice_number": "RE-12", "entity": "DE01",
+                       "cost_center": "KST-100", "open_finding_count": 3,
+                       "open_amount": 600.0}},
+    "parameters": {"months": 2, "review_minutes_per_finding": 4.0,
+                   "review_hourly_rate_eur": 45.0}
   }
 }
 ```

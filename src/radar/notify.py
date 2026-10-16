@@ -17,6 +17,7 @@ from typing import Callable, Dict, List, Optional
 from .config import Settings
 from .db import Store
 from .digest import (
+    empty_cost_center_backlog_trend,
     empty_cost_center_rollup,
     empty_rollup,
     empty_supplier_backlog_trend,
@@ -72,6 +73,8 @@ def _webhook_payload(digest: dict) -> dict:
         or empty_cost_center_rollup(),
         "by_supplier_backlog_trend": digest.get("by_supplier_backlog_trend")
         or empty_supplier_backlog_trend(),
+        "by_cost_center_backlog_trend": digest.get("by_cost_center_backlog_trend")
+        or empty_cost_center_backlog_trend(),
         "top_findings": top,
     }
 
@@ -165,7 +168,8 @@ def deliver_digest(
     centers (AND-combined with ``entities``). ``review_minutes``/``hourly_rate``
     override the ROI assumptions for the consolidated ``by_entity_rollup`` (same
     what-if switches as the ROI endpoints). ``trend_months`` forwards the
-    look-back window of the ``by_supplier_backlog_trend`` block (default ``2``).
+    look-back window of the ``by_supplier_backlog_trend`` and
+    ``by_cost_center_backlog_trend`` blocks (default ``2``).
     Always returns both channel entries.
     Unconfigured channels are reported as ``skipped``; a failure in one channel
     is isolated from the other.
